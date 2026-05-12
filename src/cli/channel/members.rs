@@ -4,12 +4,14 @@ use anyhow::Context;
 
 pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let client = super::http::client();
+    let token = crate::cli::resolve_cli_token()?;
     let normalized = super::normalize_channel_name(&name);
-    let channel_id = super::resolve_channel_id(&client, server_url, &normalized).await?;
+    let channel_id = super::resolve_channel_id(&client, server_url, &normalized, &token).await?;
 
     let url = format!("{server_url}/api/channels/{channel_id}/members");
     let res = client
         .get(&url)
+        .bearer_auth(&token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

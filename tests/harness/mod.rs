@@ -227,6 +227,10 @@ pub fn build_router_with_event_bus_and_dir(
 /// `Authorization: Bearer` header on its bridge-auth-enforcing
 /// requests.
 ///
+/// Does NOT layer the auto-inject auth middleware — bridge_auth tests
+/// need precise control over which credential each request carries
+/// (e.g. testing that a missing `Authorization` header → 401).
+///
 /// Mirrors the old `BridgeAuth::from_pairs` shape — bridges no longer
 /// have a separate registry; everything goes through `api_tokens`.
 pub fn build_router_with_bridge_tokens<I, S1, S2>(store: Arc<Store>, pairs: I) -> Router
@@ -254,7 +258,7 @@ where
     let data_dir = unique_test_data_dir();
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
-    let router = build_router_with_services(
+    build_router_with_services(
         store,
         Arc::new(EventBus::new()),
         data_dir,
@@ -264,8 +268,7 @@ where
             chorus::agent::manager::build_driver_registry(),
         )) as SharedRuntimeStatusProvider,
         vec![],
-    );
-    router.layer(axum::middleware::from_fn(inject_test_auth))
+    )
 }
 
 /// Per-call unique tempdir so parallel cargo tests don't collide on

@@ -40,6 +40,7 @@ pub struct BridgeClientConfig {
 pub async fn run_in_process_bridge_client(
     platform_ws: String,
     machine_id: String,
+    bearer_token: Option<String>,
     manager: Arc<AgentManager>,
     store: Arc<Store>,
     shutdown: CancellationToken,
@@ -51,7 +52,7 @@ pub async fn run_in_process_bridge_client(
         // stands up its own MCP bridge and AgentManager. The in-process
         // path skips both, so these are placeholders.
         platform_http: String::new(),
-        token: None,
+        token: bearer_token,
         machine_id,
         bridge_listen: String::new(),
         agents_dir: PathBuf::new(),

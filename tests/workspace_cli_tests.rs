@@ -29,6 +29,7 @@ async fn run_workspace(server_url: &str, args: &[&str]) -> std::process::Output 
             .arg("--server-url")
             .arg(&server_url)
             .env("RUST_LOG", "chorus=info")
+            .env("CHORUS_TOKEN", harness::TEST_AUTH_TOKEN)
             .output()
             .expect("failed to run chorus binary")
     })

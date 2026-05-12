@@ -28,6 +28,11 @@ async fn run_agent(args: &[&str]) -> std::process::Output {
             .arg("agent")
             .args(&args)
             .env("RUST_LOG", "chorus=info")
+            // Auth: the spawned binary reads `CHORUS_TOKEN` first, then
+            // credentials.toml on disk. The harness's default test
+            // identity matches this token; the in-process server router
+            // accepts it via the new auth layer.
+            .env("CHORUS_TOKEN", harness::TEST_AUTH_TOKEN)
             .output()
             .expect("failed to run chorus binary")
     })

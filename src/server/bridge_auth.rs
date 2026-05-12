@@ -42,12 +42,16 @@ use crate::store::Store;
 pub enum AuthOutcome {
     /// No bridge tokens exist in the DB yet. Passes through.
     Disabled,
-    /// Bearer matched a row whose `machine_id` is set; this is the value
-    /// the bridge's hello (and any `/internal/agent/{id}/*` path) must
-    /// be consistent with.
+    /// Bearer matched a bridge token; the bridge's hello (and any
+    /// `/internal/agent/{agent_id}/*` path) must reference an agent
+    /// whose `agents.machine_id` matches.
     Allowed { expected_machine_id: String },
-    /// Missing/malformed header, unknown token, revoked, or CLI token
-    /// (one without a `machine_id`).
+    /// Bearer matched a CLI token. The CLI may only operate on the user
+    /// id the token represents — i.e. `/internal/agent/{actor_id}/*`
+    /// where `actor_id == users.id`. Agents are off-limits to CLI
+    /// tokens; those need bridges.
+    CliAllowed { user_id: String },
+    /// Missing/malformed header, unknown token, or revoked.
     Rejected,
 }
 
@@ -100,10 +104,14 @@ pub fn check(store: &Store, headers: &HeaderMap) -> AuthOutcome {
             expected_machine_id: m,
         },
         _ => {
-            // A CLI token (machine_id NULL) is valid for /api/* but not
-            // for /internal/*. Reject explicitly so the operator sees
-            // that the token they pasted is the wrong kind.
-            AuthOutcome::Rejected
+            // CLI token. Resolve its user_id so the middleware can
+            // enforce "this token can only act as its own user."
+            match store.get_account_by_id(&row.account_id) {
+                Ok(Some(acct)) => AuthOutcome::CliAllowed {
+                    user_id: acct.user_id,
+                },
+                _ => AuthOutcome::Rejected,
+            }
         }
     }
 }
@@ -129,14 +137,13 @@ pub async fn require_bridge_auth(
             match agent_id_from_internal_path(&path) {
                 Some(agent_id) => {
                     let owner = match state.store.get_agent_by_id(agent_id, false) {
-                        Ok(Some(agent)) => agent.machine_id,
+                        Ok(Some(agent)) => Some(agent.machine_id),
                         Ok(None) => {
-                            warn!(
-                                path = %path,
-                                token_machine_id = %expected_machine_id,
-                                "bridge_auth: rejecting /internal request — agent_id not in store"
-                            );
-                            return (StatusCode::FORBIDDEN, "agent not found").into_response();
+                            // No agent row with this id. If the id is the
+                            // CLI user's user_id this would be a CLI-acting-
+                            // as-self path (CliAllowed handles that branch);
+                            // for bridge tokens, an unknown agent is forbidden.
+                            None
                         }
                         Err(err) => {
                             warn!(
@@ -148,28 +155,63 @@ pub async fn require_bridge_auth(
                                 .into_response();
                         }
                     };
-                    if owner != *expected_machine_id {
-                        warn!(
-                            path = %path,
-                            token_machine_id = %expected_machine_id,
-                            agent_owner = %owner,
-                            "bridge_auth: rejecting /internal request — token's machine_id does not own this agent"
-                        );
-                        return (StatusCode::FORBIDDEN, "token not authorized for this agent")
-                            .into_response();
+                    match owner {
+                        Some(owner) if owner == *expected_machine_id => next.run(req).await,
+                        Some(owner) => {
+                            warn!(
+                                path = %path,
+                                token_machine_id = %expected_machine_id,
+                                agent_owner = %owner,
+                                "bridge_auth: rejecting /internal request — token's machine_id does not own this agent"
+                            );
+                            (StatusCode::FORBIDDEN, "token not authorized for this agent")
+                                .into_response()
+                        }
+                        None => {
+                            warn!(
+                                path = %path,
+                                token_machine_id = %expected_machine_id,
+                                "bridge_auth: rejecting /internal request — agent_id not in store"
+                            );
+                            (StatusCode::FORBIDDEN, "agent not found").into_response()
+                        }
                     }
-                    next.run(req).await
                 }
                 None => {
-                    // Path doesn't match the expected `/internal/agent/<id>/...`
-                    // shape. The route_layer should only attach this middleware
-                    // to agent-scoped routes, so reaching here means a routing
-                    // wiring change. Fail closed.
                     warn!(
                         path = %path,
                         "bridge_auth: rejecting /internal request — no agent_id in path"
                     );
                     (StatusCode::FORBIDDEN, "no agent scope in path").into_response()
+                }
+            }
+        }
+        AuthOutcome::CliAllowed { user_id } => {
+            // CLI token: may only act under its own user_id. The classic
+            // case is `chorus send` posting to /internal/agent/{me.id}/send
+            // where `me.id` is the human's user id, not an agent id.
+            let path = req.uri().path().to_string();
+            match agent_id_from_internal_path(&path) {
+                Some(actor_id) if actor_id == user_id => next.run(req).await,
+                Some(actor_id) => {
+                    warn!(
+                        path = %path,
+                        token_user_id = %user_id,
+                        actor_id = %actor_id,
+                        "bridge_auth: rejecting /internal request — CLI token can only act as its own user"
+                    );
+                    (
+                        StatusCode::FORBIDDEN,
+                        "CLI token not authorized for this actor",
+                    )
+                        .into_response()
+                }
+                None => {
+                    warn!(
+                        path = %path,
+                        "bridge_auth: rejecting /internal request — no actor scope in path"
+                    );
+                    (StatusCode::FORBIDDEN, "no actor scope in path").into_response()
                 }
             }
         }
@@ -258,18 +300,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_cli_token_at_bridge_endpoint() {
-        // CLI tokens have machine_id = NULL → invalid for /internal/*.
+    fn cli_token_resolves_to_cli_allowed_with_user_id() {
+        // CLI tokens (machine_id = NULL) are NOT outright rejected at
+        // /internal/* — they're returned as `CliAllowed { user_id }`
+        // so the middleware can let `chorus send` post as the user
+        // itself while still gating bridges by machine_id.
         let s = Store::open(":memory:").unwrap();
         let user = s.create_user("alice").unwrap();
         let acct = s.create_local_account(&user.id).unwrap();
-        // Also mint a bridge token so passthrough doesn't kick in.
+        // Mint a bridge token so passthrough doesn't kick in.
         let _ = s
             .mint_bridge_token(&acct.id, "machine-x", Some("bridge"))
             .unwrap();
         let cli = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
         let h = mk_headers(&[("Authorization", &format!("Bearer {}", cli.raw))]);
-        assert_eq!(check(&s, &h), AuthOutcome::Rejected);
+        match check(&s, &h) {
+            AuthOutcome::CliAllowed {
+                user_id: resolved,
+            } => assert_eq!(resolved, user.id),
+            other => panic!("expected CliAllowed, got {other:?}"),
+        }
     }
 
     #[test]

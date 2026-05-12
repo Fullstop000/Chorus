@@ -73,10 +73,12 @@ pub async fn run(name: String, yes: bool, server_url: &str) -> anyhow::Result<()
     }
 
     let client = super::http::client();
-    let id = super::resolve_channel_id(&client, server_url, &normalized).await?;
+    let token = crate::cli::resolve_cli_token()?;
+    let id = super::resolve_channel_id(&client, server_url, &normalized, &token).await?;
     let url = format!("{server_url}/api/channels/{id}");
     let res = client
         .delete(&url)
+        .bearer_auth(&token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

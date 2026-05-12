@@ -77,6 +77,14 @@ pub async fn handle_bridge_ws(
             AuthOutcome::Allowed {
                 expected_machine_id,
             } => Some(expected_machine_id),
+            AuthOutcome::CliAllowed { .. } => {
+                // CLI tokens are not allowed to open a bridge WS session
+                // — they're for `chorus send` and friends, not for
+                // bridges hosting agents.
+                warn!("bridge_ws: rejecting upgrade — CLI token cannot open bridge session");
+                return (StatusCode::FORBIDDEN, "CLI token not allowed on bridge upgrade")
+                    .into_response();
+            }
             AuthOutcome::Rejected => {
                 warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
                 return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token")

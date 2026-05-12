@@ -10,7 +10,7 @@ use super::surface_http_error;
 
 pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<()> {
     let client = super::http::client();
-    let me = crate::cli::fetch_authed_user(&client, server_url).await?;
+    let (me, token) = crate::cli::fetch_authed_user_with_token(&client, server_url).await?;
     // Normalize the user input (trim, strip leading `#`, lowercase) and then
     // send it back with a leading `#`. The server's `resolve_history_target`
     // only runs its own normalization on targets that already start with `#`
@@ -23,6 +23,7 @@ pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<(
     );
     let res = client
         .get(&url)
+        .bearer_auth(&token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

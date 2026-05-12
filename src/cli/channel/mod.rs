@@ -93,11 +93,13 @@ pub(super) async fn resolve_channel_id(
     client: &reqwest::Client,
     server_url: &str,
     name: &str,
+    token: &str,
 ) -> anyhow::Result<String> {
     let normalized = normalize_channel_name(name);
     let url = format!("{server_url}/api/channels?include_archived=true");
     let res = client
         .get(&url)
+        .bearer_auth(token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

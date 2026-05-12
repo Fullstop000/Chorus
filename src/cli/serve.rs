@@ -134,7 +134,7 @@ pub async fn run(
         .flatten()
         .map(|c| c.token);
     let (bridge_app, bridge_ct) =
-        chorus::bridge::serve::build_bridge_router(&server_url, bridge_token);
+        chorus::bridge::serve::build_bridge_router(&server_url, bridge_token.clone());
     // Cascade the shared shutdown token into the bridge's internal CT so any
     // in-flight MCP sessions (child tokens spawned per request) drain when
     // Ctrl-C fires. Without this, axum stops accepting connections but active
@@ -198,6 +198,9 @@ pub async fn run(
     // accepting on the listener.
     let in_proc_machine_id = chorus::server::resolve_local_machine_id_for_serve(&data_dir);
     let in_proc_ws_url = format!("ws://127.0.0.1:{port}/api/bridge/ws");
+    // Reuse the bridge token loaded above so the WS upgrade passes the
+    // platform's `require_bridge_auth` check.
+    let in_proc_bearer = bridge_token.clone();
     let in_proc_shutdown = shutdown_token.clone();
     let in_proc_manager = manager.clone();
     let in_proc_store = store.clone();
@@ -205,6 +208,7 @@ pub async fn run(
         if let Err(err) = chorus::bridge::client::run_in_process_bridge_client(
             in_proc_ws_url,
             in_proc_machine_id,
+            in_proc_bearer,
             in_proc_manager,
             in_proc_store,
             in_proc_shutdown,
