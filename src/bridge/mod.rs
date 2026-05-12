@@ -84,8 +84,12 @@ pub struct ChatBridge {
 
 impl ChatBridge {
     pub fn new(server_url: String) -> Self {
+        Self::with_token(server_url, None)
+    }
+
+    pub fn with_token(server_url: String, bearer_token: Option<String>) -> Self {
         Self {
-            backend: ChorusBackend::new(server_url),
+            backend: ChorusBackend::with_token(server_url, bearer_token),
             tool_router: Self::tool_router(),
         }
     }

@@ -66,7 +66,7 @@ pub async fn run_bridge_client(cfg: BridgeClientConfig) -> anyhow::Result<()> {
     let event_bus = Arc::new(EventBus::new());
 
     // 1. Bind embedded MCP bridge for local agents to reach the platform's HTTP API.
-    let (bridge_app, bridge_ct) = crate::bridge::serve::build_bridge_router(&cfg.platform_http);
+    let (bridge_app, bridge_ct) = crate::bridge::serve::build_bridge_router(&cfg.platform_http, cfg.token.clone());
     let bridge_listener = tokio::net::TcpListener::bind(&cfg.bridge_listen)
         .await
         .map_err(|e| anyhow::anyhow!("bridge listen {}: {e}", cfg.bridge_listen))?;

@@ -25,7 +25,11 @@ struct BridgeServer {
 }
 
 impl BridgeServer {
-    fn new(server_url: String, cancellation_token: CancellationToken) -> Self {
+    fn new(
+        server_url: String,
+        bearer_token: Option<String>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let url = server_url.clone();
         let config = StreamableHttpServerConfig {
             cancellation_token: cancellation_token.child_token(),
@@ -40,8 +44,9 @@ impl BridgeServer {
             },
         };
 
+        let token = bearer_token.clone();
         let service = StreamableHttpService::new(
-            move || Ok(ChatBridge::new(url.clone())),
+            move || Ok(ChatBridge::with_token(url.clone(), token.clone())),
             Arc::new(session_manager),
             config,
         );
@@ -112,10 +117,22 @@ async fn handle_mcp(
 
 /// Build the bridge Axum router without binding or writing discovery info.
 ///
+/// `bearer_token` is the bridge's credential against the platform; every
+/// agent-driven HTTP call out of `ChorusBackend` carries it.
+/// `None` is accepted for transitional / test paths where the platform's
+/// `bridge_auth` is in passthrough mode.
+///
 /// Useful for tests that want to plug the router into their own listener.
-pub fn build_bridge_router(server_url: &str) -> (Router, CancellationToken) {
+pub fn build_bridge_router(
+    server_url: &str,
+    bearer_token: Option<String>,
+) -> (Router, CancellationToken) {
     let ct = CancellationToken::new();
-    let server = Arc::new(BridgeServer::new(server_url.to_string(), ct.clone()));
+    let server = Arc::new(BridgeServer::new(
+        server_url.to_string(),
+        bearer_token,
+        ct.clone(),
+    ));
 
     let app = Router::new()
         .route("/mcp", any(handle_mcp))
@@ -129,7 +146,7 @@ pub fn build_bridge_router(server_url: &str) -> (Router, CancellationToken) {
 ///
 /// Agents connect via `http://<listen_addr>/mcp` with the `X-Agent-Id` header.
 pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::Result<()> {
-    let (app, ct) = build_bridge_router(server_url);
+    let (app, ct) = build_bridge_router(server_url, None);
 
     // Resolve listen_addr before binding so we can reject non-loopback addresses
     // without ever opening a listening socket on them.

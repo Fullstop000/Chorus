@@ -125,7 +125,16 @@ pub async fn run(
 
     tracing::info!(port = actual_bridge_port, "shared bridge listening");
 
-    let (bridge_app, bridge_ct) = chorus::bridge::serve::build_bridge_router(&server_url);
+    // The in-process bridge sends every agent HTTP call through this
+    // MCP listener. Load `bridge-credentials.toml` so those calls carry
+    // the bridge's bearer token; when absent (fresh install or test
+    // harness), pass `None` and rely on the platform's passthrough.
+    let bridge_token = super::credentials::bridge_load(&data_dir)
+        .ok()
+        .flatten()
+        .map(|c| c.token);
+    let (bridge_app, bridge_ct) =
+        chorus::bridge::serve::build_bridge_router(&server_url, bridge_token);
     // Cascade the shared shutdown token into the bridge's internal CT so any
     // in-flight MCP sessions (child tokens spawned per request) drain when
     // Ctrl-C fires. Without this, axum stops accepting connections but active

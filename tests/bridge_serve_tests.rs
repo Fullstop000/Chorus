@@ -46,7 +46,7 @@ async fn start_bridge() -> (String, tokio_util::sync::CancellationToken) {
 async fn start_bridge_with_server(
     server_url: &str,
 ) -> (String, tokio_util::sync::CancellationToken) {
-    let (app, ct) = build_bridge_router(server_url);
+    let (app, ct) = build_bridge_router(server_url, None);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
