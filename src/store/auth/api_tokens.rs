@@ -167,6 +167,18 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Revoke a token by its hash (the device-rotate path can't recover
+    /// the raw — only the hash row is reachable). Idempotent.
+    pub fn revoke_token_by_hash(&self, token_hash: &str) -> Result<bool> {
+        let conn = self.lock_conn();
+        let affected = conn.execute(
+            "UPDATE api_tokens SET revoked_at = datetime('now')
+             WHERE token_hash = ?1 AND revoked_at IS NULL",
+            params![token_hash],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Public lookup by SHA-256 hash. Returns the row without any
     /// validity checks (caller decides what's acceptable).
     pub fn get_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {

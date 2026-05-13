@@ -3,6 +3,7 @@ pub mod agents;
 pub mod attachments;
 pub mod channels;
 pub mod decisions;
+pub mod devices;
 pub mod dto;
 pub mod messages;
 pub mod path_params;
@@ -62,6 +63,9 @@ pub struct AppState {
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
     pub bridge_registry: Arc<BridgeRegistry>,
+    /// Resolved dev-auth config: enabled flag + allowlist. Empty when
+    /// `CHORUS_DEV_AUTH` is unset. See `server::auth::dev_login`.
+    pub dev_auth: Arc<crate::server::auth::dev_login::DevAuthConfig>,
 }
 
 impl AppState {
