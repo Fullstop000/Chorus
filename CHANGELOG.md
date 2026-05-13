@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11.0] - 2026-05-13
+
+### Added
+- **Dev auth provider for remote installs.** `CHORUS_DEV_AUTH=1 CHORUS_DEV_AUTH_USERS=zht chorus serve` mounts `POST /api/auth/dev-login`, finds-or-creates an allowlisted user, and returns the same `chorus_sid` cookie `local-session` does — without the loopback gate. Designed for solo operators on access-controlled hosts (GCP VM, homelab) so the UI is reachable from a non-loopback browser without standing up OAuth. Refuses to start with an empty allowlist; logs a WARN + shows a non-dismissible yellow banner; `/health` reports `dev_auth: true`.
+- **User-scoped bridge tokens.** `provider='bridge', machine_id=NULL` row shape — one bearer per user, shared across that user's machines. Each machine registers in a new `bridge_machines` table on first `bridge.hello`.
+- **Settings → Devices page.** Mints the user's bridge token (one-shot reveal — bearer never stored raw, shown once at first-mint), lists onboarded devices with active/offline/kicked status, supports Kick (mark disconnected, reject reconnect) / Forget (hard-delete) / Rotate (revoke + remint, kicks every device).
+- **Zero-arg `chorus bridge`.** Reads `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (host + token), derives WS/HTTP URLs from `host`, auto-detects `machine_id` from hostname with random fallback. Two new WS close codes 4004 `kicked` + 4005 `token_revoked` → bridge exits non-zero with an actionable message instead of looping in backoff.
+
+### Changed
+- `GET /api/devices` returns `{ has_token, devices[] }` (envelope, not bare array) so the UI can tell "no token yet" apart from "token exists but no machine has connected."
+- `chorus bridge` CLI surface shrank from 6 args to 1: `--data-dir <path>` (optional). Host + token come from the credentials file, not flags.
+
+### Migration
+- Existing data dirs from <0.0.11.0 must wipe `~/.chorus` and re-run `chorus setup`. The new `provider` column on `api_tokens` is NOT NULL with no default.
+
 ## [0.0.10.0] - 2026-05-13
 
 ### Added
