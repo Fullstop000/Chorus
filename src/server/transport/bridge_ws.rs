@@ -210,7 +210,8 @@ async fn bridge_session(
     );
 
     let machine_id = hello.machine_id.clone();
-    let (mut outbound_rx, mut close_rx, _registration) = registry.register(&machine_id);
+    let (mut outbound_rx, mut close_rx, _registration) =
+        registry.register(&machine_id, user_scoped_token_hash.as_deref());
 
     if let Err(err) = send_initial_target(&mut socket, store.as_ref(), &machine_id).await {
         warn!(machine_id = %machine_id, error = %err, "bridge_ws: failed to send initial bridge.target");

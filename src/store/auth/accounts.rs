@@ -109,6 +109,14 @@ impl Store {
         email: &str,
     ) -> Result<Option<Account>> {
         let conn = self.lock_conn();
+        Self::find_account_by_provider_email_inner(&conn, auth_provider, email)
+    }
+
+    pub(crate) fn find_account_by_provider_email_inner(
+        conn: &Connection,
+        auth_provider: &str,
+        email: &str,
+    ) -> Result<Option<Account>> {
         conn.query_row(
             "SELECT id, user_id, auth_provider, email, disabled_at, created_at
              FROM accounts WHERE auth_provider = ?1 AND email = ?2",

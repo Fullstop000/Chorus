@@ -71,6 +71,68 @@ impl Store {
         tx.commit()?;
         Ok((user, account))
     }
+
+    /// Find-or-create a dev-auth identity. Single-transaction so
+    /// concurrent dev-logins for the same `username` race on the
+    /// `UNIQUE(auth_provider, email)` constraint cleanly: one wins, the
+    /// other sees the row already exists and returns it. Also mirrors
+    /// the User into the legacy `humans` table so handlers that still
+    /// read from there resolve a display name. Mirrors
+    /// `ensure_local_identity` for the dev-auth provider.
+    pub fn ensure_dev_identity(&self, username: &str, email: &str) -> Result<(User, Account)> {
+        // Retry once on UNIQUE collision: another concurrent dev-login
+        // for the same username may have just inserted. Re-read.
+        for attempt in 0..2 {
+            let mut conn = self.lock_conn();
+            let tx = conn.transaction()?;
+
+            if let Some(account) = Self::find_account_by_provider_email_inner(&tx, "dev", email)? {
+                let user = Self::get_user_by_id_inner(&tx, &account.user_id)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "dev account {} points at missing user {}",
+                        account.id,
+                        account.user_id
+                    )
+                })?;
+                tx.commit()?;
+                return Ok((user, account));
+            }
+
+            let user = Self::create_user_inner(&tx, username)?;
+            let account_result = tx.execute(
+                "INSERT INTO accounts (id, user_id, auth_provider, email)
+                 VALUES (?1, ?2, 'dev', ?3)",
+                params![format!("acc_{}", uuid::Uuid::new_v4()), user.id, email],
+            );
+            match account_result {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(err, _))
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation && attempt == 0 =>
+                {
+                    // Another concurrent login won the race. Drop the tx
+                    // and retry the find branch on the next iteration.
+                    drop(tx);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+            // Legacy mirror: keep humans aligned (PR # follow-up: drop
+            // when the humans table goes away).
+            tx.execute(
+                "INSERT INTO humans (id, name, auth_provider)
+                 VALUES (?1, ?2, 'dev')
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                params![user.id, user.name],
+            )?;
+            let account = Self::find_account_by_provider_email_inner(&tx, "dev", email)?
+                .ok_or_else(|| anyhow::anyhow!("dev account vanished after insert"))?;
+            tx.commit()?;
+            return Ok((user, account));
+        }
+        Err(anyhow::anyhow!(
+            "ensure_dev_identity: lost race twice for {username}; aborting"
+        ))
+    }
 }
 
 #[cfg(test)]

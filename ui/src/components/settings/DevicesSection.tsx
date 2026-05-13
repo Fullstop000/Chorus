@@ -71,7 +71,15 @@ export function DevicesSection() {
       setHasToken(true)
     } catch (err) {
       if (err instanceof ApiError && err.status === 410) {
-        setActionError('A bridge token already exists. Use Rotate to mint a new one.')
+        // Token already exists server-side (raced with another tab or
+        // local state was stale). Flip to the post-mint state + refresh
+        // so the UI moves the user toward Rotate instead of leaving
+        // them on an inert "Onboard a device" button.
+        setHasToken(true)
+        setActionError(
+          'A bridge token already exists for this account. Use Rotate to mint a new one.',
+        )
+        await refresh()
       } else {
         setActionError(err instanceof Error ? err.message : 'failed to mint')
       }

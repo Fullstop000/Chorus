@@ -415,10 +415,11 @@ pub async fn run() -> anyhow::Result<()> {
         | Some(Commands::Serve { data_dir, .. }) => {
             Some(data_dir.clone().unwrap_or_else(default_data_dir))
         }
-        Some(Commands::Bridge { data_dir, .. }) => Some(data_dir.clone().unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{home}/.chorus-bridge")
-        })),
+        Some(Commands::Bridge { data_dir, .. }) => Some(
+            data_dir
+                .clone()
+                .unwrap_or_else(bridge::default_bridge_data_dir),
+        ),
         None => Some(default_data_dir()),
         _ => None,
     };

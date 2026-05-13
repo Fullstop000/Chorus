@@ -138,6 +138,19 @@ pub async fn handle_mint_device(
     {
         Ok(m) => m,
         Err(err) => {
+            // Concurrent mint TOCTOU: the check above passed because no
+            // token existed at lookup time, but another mint racing
+            // alongside us inserted one before we got here. The partial
+            // unique index on api_tokens (idx_api_tokens_user_bridge_unique)
+            // catches this — surface as 410 Gone, same as the not-raced
+            // case.
+            if err.to_string().contains("UNIQUE constraint") {
+                return (
+                    StatusCode::GONE,
+                    "bridge token already exists; call /api/devices/rotate to mint a new one",
+                )
+                    .into_response();
+            }
             warn!(err = %err, "mint device: token mint failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
         }
@@ -155,7 +168,17 @@ pub async fn handle_rotate_device(
     Extension(actor): Extension<Actor>,
     headers: HeaderMap,
 ) -> Response {
-    if let Ok(Some(existing)) = state.store.find_active_user_bridge_token(&actor.account_id) {
+    // Look up the existing token. A store error here must NOT silently
+    // fall through to mint — that would orphan the old token (still
+    // valid) AND create a new one. Bubble up to the caller.
+    let existing = match state.store.find_active_user_bridge_token(&actor.account_id) {
+        Ok(t) => t,
+        Err(err) => {
+            warn!(err = %err, "rotate device: token lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
+        }
+    };
+    if let Some(existing) = existing {
         // Snapshot machine_ids before revoke so we can close their live
         // WS sessions with 4005 (token_revoked) after the row is
         // invalidated. Without this, the bridge stays connected on a
@@ -169,9 +192,11 @@ pub async fn handle_rotate_device(
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
         }
         for m in &machines {
-            let n = state
-                .bridge_registry
-                .signal_close_machine(&m.machine_id, 4005);
+            let n = state.bridge_registry.signal_close_for_token(
+                &existing.token_hash,
+                &m.machine_id,
+                4005,
+            );
             if n > 0 {
                 tracing::info!(
                     machine_id = %m.machine_id,
@@ -240,9 +265,10 @@ pub async fn handle_delete_device(
             // 4004 `kicked` so the bridge sees an actionable signal
             // immediately instead of looping until a /internal/* call
             // happens to fail auth.
-            let signaled = state
-                .bridge_registry
-                .signal_close_machine(&machine_id, 4004);
+            let signaled =
+                state
+                    .bridge_registry
+                    .signal_close_for_token(&token.token_hash, &machine_id, 4004);
             tracing::info!(
                 machine_id = %machine_id,
                 forget,

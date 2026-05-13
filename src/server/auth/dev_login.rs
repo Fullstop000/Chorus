@@ -122,28 +122,14 @@ pub async fn handle_dev_login(
     let store = state.store.as_ref();
     let email = dev_email_for(username);
 
-    // Find-or-create the (user, dev account) pair.
-    let account = match store.find_account_by_provider_email("dev", &email) {
-        Ok(Some(acct)) => acct,
-        Ok(None) => {
-            // Mint a fresh User + Account.
-            let user = match store.create_user(username) {
-                Ok(u) => u,
-                Err(err) => {
-                    warn!(err = %err, "dev-login: create_user failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
-                }
-            };
-            match store.create_account(&user.id, "dev", Some(&email)) {
-                Ok(a) => a,
-                Err(err) => {
-                    warn!(err = %err, "dev-login: create_account failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
-                }
-            }
-        }
+    // Find-or-create the (user, dev account) pair atomically. Concurrent
+    // first-logins for the same username collide on the
+    // UNIQUE(auth_provider, email) constraint; `ensure_dev_identity`
+    // handles the race + mirrors to legacy `humans`.
+    let (user, account) = match store.ensure_dev_identity(username, &email) {
+        Ok(pair) => pair,
         Err(err) => {
-            warn!(err = %err, "dev-login: account lookup failed");
+            warn!(err = %err, "dev-login: ensure_dev_identity failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
         }
     };
@@ -151,25 +137,6 @@ pub async fn handle_dev_login(
     if account.disabled_at.is_some() {
         return (StatusCode::FORBIDDEN, "account is disabled").into_response();
     }
-
-    let user = match store.get_user_by_id(&account.user_id) {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            warn!(
-                user_id = %account.user_id,
-                "dev-login: account points to non-existent user"
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "user not found for account",
-            )
-                .into_response();
-        }
-        Err(err) => {
-            warn!(err = %err, "dev-login: user lookup failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
-        }
-    };
 
     // Match local-session: D1=A, no expiry. Cloud OAuth flows can set one.
     let session = match store.create_session(&account.id, None) {

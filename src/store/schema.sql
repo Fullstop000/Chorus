@@ -198,6 +198,12 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_account_id ON api_tokens(account_id);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_machine_id ON api_tokens(machine_id);
+-- Enforce "exactly one active user-scoped bridge token per account."
+-- Concurrent mint / rotate handlers race-collide here instead of producing
+-- two coexisting tokens for the same user.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_user_bridge_unique
+    ON api_tokens(account_id)
+    WHERE provider = 'bridge' AND machine_id IS NULL AND revoked_at IS NULL;
 
 -- Live + historical registry of bridge connections per user-scoped token.
 -- One row per (token, machine) pair. State columns disambiguate

@@ -22,6 +22,10 @@ use tracing::debug;
 /// chat frames are small (<1 KB); 256 leaves headroom for normal bursts.
 const PER_BRIDGE_BUFFER: usize = 256;
 
+/// One close-signal entry: `(token_hash_if_user_scoped, sender)`. Lives
+/// in the per-machine list inside `BridgeRegistry::close_signals`.
+type CloseSignalEntry = (Option<String>, mpsc::Sender<u16>);
+
 /// Maps `machine_id` to a list of outbound senders (one per active WS
 /// session for that machine). Each sender carries pre-encoded JSON
 /// strings ready to write to a `Message::Text` frame.
@@ -34,10 +38,15 @@ const PER_BRIDGE_BUFFER: usize = 256;
 #[derive(Default)]
 pub struct BridgeRegistry {
     connections: Mutex<HashMap<String, Vec<mpsc::Sender<String>>>>,
-    /// Out-of-band close signals: parallel to `connections`, lets us
-    /// push a WS close-code (4004 kicked, 4005 token_revoked) to a
-    /// live session without going through the data-frame channel.
-    close_signals: Mutex<HashMap<String, Vec<mpsc::Sender<u16>>>>,
+    /// Out-of-band close signals: parallel to `connections`. Each
+    /// entry is tagged with the bridge's `token_hash` (when the WS
+    /// is authenticated) so close-on-rotate / close-on-kick can target
+    /// JUST the user's own sessions and not accidentally drop another
+    /// user's bridge that happens to share the same machine_id string.
+    /// `None` means the connection isn't tied to a user-scoped token
+    /// (legacy per-machine bridge or passthrough mode); such sessions
+    /// are NOT targeted by `signal_close_for_token`.
+    close_signals: Mutex<HashMap<String, Vec<CloseSignalEntry>>>,
     /// `(machine_id, agent_id) → current_runtime_pid`. Set by every
     /// `agent.state{state=started}` event the bridge sends; checked
     /// against the pid carried by every other transition. Cleared
@@ -79,6 +88,7 @@ impl BridgeRegistry {
     pub fn register(
         self: &Arc<Self>,
         machine_id: &str,
+        token_hash: Option<&str>,
     ) -> (mpsc::Receiver<String>, mpsc::Receiver<u16>, Registration) {
         let (tx, rx) = mpsc::channel::<String>(PER_BRIDGE_BUFFER);
         let (close_tx, close_rx) = mpsc::channel::<u16>(4);
@@ -94,7 +104,7 @@ impl BridgeRegistry {
             closes
                 .entry(machine_id.to_string())
                 .or_default()
-                .push(close_tx.clone());
+                .push((token_hash.map(|s| s.to_string()), close_tx.clone()));
         }
         if had_existing {
             self.instance_pids.lock().unwrap().remove(machine_id);
@@ -112,17 +122,23 @@ impl BridgeRegistry {
         (rx, close_rx, guard)
     }
 
-    /// Signal every live WS for this `machine_id` to send a Close frame
-    /// with `code` and terminate. Returns the number of sessions
-    /// signaled. Used by Kick (4004) and Rotate (4005) to actively
-    /// disconnect the bridge instead of waiting for it to notice a
-    /// failing /internal/* call.
-    pub fn signal_close_machine(&self, machine_id: &str, code: u16) -> usize {
+    /// Signal every live WS for `(token_hash, machine_id)` to send a
+    /// Close frame with `code` and terminate. Returns the count
+    /// signaled. Used by Kick (4004) and Rotate (4005); the token_hash
+    /// scope is important so closing one user's session doesn't take
+    /// down another user's bridge that happens to share the same
+    /// machine_id string.
+    pub fn signal_close_for_token(&self, token_hash: &str, machine_id: &str, code: u16) -> usize {
         let snapshot: Vec<mpsc::Sender<u16>> = {
             let closes = self.close_signals.lock().unwrap();
             closes
                 .get(machine_id)
-                .map(|v| v.to_vec())
+                .map(|v| {
+                    v.iter()
+                        .filter(|(t, _)| t.as_deref() == Some(token_hash))
+                        .map(|(_, tx)| tx.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         let mut signaled = 0;
@@ -205,7 +221,7 @@ impl BridgeRegistry {
         {
             let mut closes = self.close_signals.lock().unwrap();
             if let Some(list) = closes.get_mut(machine_id) {
-                list.retain(|tx| !tx.same_channel(close_sender));
+                list.retain(|(_, tx)| !tx.same_channel(close_sender));
                 if list.is_empty() {
                     closes.remove(machine_id);
                 }
@@ -316,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn register_and_broadcast_delivers_to_connected_bridge() {
         let reg = BridgeRegistry::new();
-        let (mut rx, _close_rx, _guard) = reg.register("m-1");
+        let (mut rx, _close_rx, _guard) = reg.register("m-1", None);
         assert_eq!(reg.connection_count(), 1);
 
         let delivered = reg.broadcast(r#"{"hello":"world"}"#);
@@ -329,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn drop_guard_deregisters() {
         let reg = BridgeRegistry::new();
-        let (_rx, _close_rx, guard) = reg.register("m-1");
+        let (_rx, _close_rx, guard) = reg.register("m-1", None);
         assert_eq!(reg.connection_count(), 1);
         drop(guard);
         assert_eq!(reg.connection_count(), 0);
@@ -338,8 +354,8 @@ mod tests {
     #[tokio::test]
     async fn broadcast_to_multiple_machines() {
         let reg = BridgeRegistry::new();
-        let (mut rx_a, _close_a, _ga) = reg.register("m-a");
-        let (mut rx_b, _close_b, _gb) = reg.register("m-b");
+        let (mut rx_a, _close_a, _ga) = reg.register("m-a", None);
+        let (mut rx_b, _close_b, _gb) = reg.register("m-b", None);
 
         assert_eq!(reg.broadcast(r#"{"frame":"x"}"#), 2);
         assert_eq!(rx_a.recv().await.unwrap(), r#"{"frame":"x"}"#);
@@ -411,7 +427,7 @@ mod tests {
     #[tokio::test]
     async fn chat_acks_cleared_on_last_disconnect() {
         let reg = BridgeRegistry::new();
-        let (_rx, _close_rx, guard) = reg.register("m-1");
+        let (_rx, _close_rx, guard) = reg.register("m-1", None);
         reg.record_chat_ack("m-1", "agent-a", 7);
         assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(7));
         drop(guard);
@@ -424,11 +440,11 @@ mod tests {
         // for the same machine_id before A's TCP has dropped. B's emitted
         // pid=1 must be accepted: register clears the old pid map.
         let reg = BridgeRegistry::new();
-        let (_rx_a, _close_a, guard_a) = reg.register("m-1");
+        let (_rx_a, _close_a, guard_a) = reg.register("m-1", None);
         reg.record_started("m-1", "agent-a", 5);
 
         // B arrives while A still holds its registration.
-        let (_rx_b, _close_b, _guard_b) = reg.register("m-1");
+        let (_rx_b, _close_b, _guard_b) = reg.register("m-1", None);
 
         // B's fresh pid=1 must be considered current; A's pid=5 must be
         // gone. Without the supersede clear, B's pid=1 would be rejected
@@ -444,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn pids_cleared_on_last_disconnect() {
         let reg = BridgeRegistry::new();
-        let (_rx, _close_rx, guard) = reg.register("m-1");
+        let (_rx, _close_rx, guard) = reg.register("m-1", None);
         reg.record_started("m-1", "agent-a", 100);
         assert!(reg.is_current_pid("m-1", "agent-a", 100));
 
@@ -457,14 +473,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signal_close_machine_delivers_code_to_live_sessions() {
-        // Kick / Rotate rely on this: the device handler calls
-        // signal_close_machine; the session task's select on close_rx
-        // wakes with the code and emits the matching Close frame.
+    async fn signal_close_for_token_delivers_to_matching_session() {
         let reg = BridgeRegistry::new();
-        let (_rx, mut close_rx, _guard) = reg.register("m-1");
-
-        let signaled = reg.signal_close_machine("m-1", 4004);
+        let (_rx, mut close_rx, _guard) = reg.register("m-1", Some("tok-a"));
+        let signaled = reg.signal_close_for_token("tok-a", "m-1", 4004);
         assert_eq!(signaled, 1);
         let code = close_rx
             .recv()
@@ -474,11 +486,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signal_close_machine_is_noop_when_nothing_registered() {
+    async fn signal_close_for_token_does_not_kick_other_users_session() {
+        // Two bridges share the same machine_id string but belong to
+        // DIFFERENT users (different token_hash). A rotate/kick on
+        // user A's token must not close user B's session.
         let reg = BridgeRegistry::new();
-        // No session for "m-1"; signal_close_machine should be a clean
-        // 0 rather than panic on the missing entry.
-        let signaled = reg.signal_close_machine("m-1", 4004);
+        let (_rx_a, mut close_a, _ga) = reg.register("shared-host", Some("tok-a"));
+        let (_rx_b, mut close_b, _gb) = reg.register("shared-host", Some("tok-b"));
+
+        let signaled = reg.signal_close_for_token("tok-a", "shared-host", 4005);
+        assert_eq!(signaled, 1, "only tok-a's session should be closed");
+        assert_eq!(close_a.recv().await, Some(4005));
+        // tok-b's close_rx must NOT have received anything.
+        assert!(close_b.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn signal_close_for_token_is_noop_when_nothing_registered() {
+        let reg = BridgeRegistry::new();
+        let signaled = reg.signal_close_for_token("tok-x", "m-1", 4004);
         assert_eq!(signaled, 0);
     }
 }

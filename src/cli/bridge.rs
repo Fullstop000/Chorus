@@ -67,26 +67,36 @@ fn parse_credentials(toml_text: &str) -> anyhow::Result<BridgeCredentials> {
     })
 }
 
-/// Render the URL pair from a host string. `host` may be a bare hostname
-/// (`chorus.host`), or include an explicit port (`chorus.host:3001`,
-/// `localhost:3001`). Loopback / explicit `:port` patterns default to
-/// `http://` / `ws://`; everything else assumes HTTPS / WSS (the
-/// reverse-proxy-fronted production shape).
+/// Render the URL pair from a host string. `host` may include an
+/// explicit scheme (`https://chorus.host`) — that's authoritative. With
+/// no scheme: TLS is the default; only loopback hostnames (`localhost`,
+/// `127.0.0.1`, `[::1]`) downgrade to plaintext. A production host like
+/// `chorus.example.com:8443` keeps HTTPS — port presence is NOT a
+/// downgrade signal.
 fn derive_urls(host: &str) -> (String, String) {
-    let bare = host
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_start_matches("wss://")
-        .trim_start_matches("ws://")
-        .trim_end_matches('/')
-        .to_string();
-    let host_only = bare.split(':').next().unwrap_or("").to_string();
-    let plaintext = matches!(
-        host_only.as_str(),
-        "localhost" | "127.0.0.1" | "[::1]" | "::1"
-    ) || bare.contains(':');
-    let (http_scheme, ws_scheme) = if plaintext {
+    let trimmed = host.trim().trim_end_matches('/');
+    // Explicit scheme: trust it. Map https↔wss / http↔ws.
+    for (http_prefix, ws_scheme) in [("https://", "wss"), ("http://", "ws")] {
+        if let Some(rest) = trimmed.strip_prefix(http_prefix) {
+            return (
+                format!("{http_prefix}{rest}"),
+                format!("{ws_scheme}://{rest}/api/bridge/ws"),
+            );
+        }
+    }
+    // No scheme: bare host (possibly with port).
+    let bare = trimmed;
+    // Strip port. IPv6 hosts are bracketed (`[::1]` or `[::1]:8443`);
+    // split on the closing bracket. Otherwise a simple `:port` strip.
+    let host_only = if let Some(rest) = bare.strip_prefix('[') {
+        rest.split_once(']').map(|(h, _)| h).unwrap_or(rest)
+    } else if let Some((h, _)) = bare.rsplit_once(':') {
+        h
+    } else {
+        bare
+    };
+    let is_loopback = matches!(host_only, "localhost" | "127.0.0.1" | "::1");
+    let (http_scheme, ws_scheme) = if is_loopback {
         ("http", "ws")
     } else {
         ("https", "wss")
@@ -182,7 +192,38 @@ fn persist_machine_id(credentials_path: &PathBuf, machine_id: &str) -> anyhow::R
         lines.push(new_line);
     }
     let body = format!("{}\n", lines.join("\n"));
-    std::fs::write(credentials_path, body)?;
+    atomic_write_0600(credentials_path, body.as_bytes())?;
+    Ok(())
+}
+
+/// Write `bytes` to `path` atomically via tempfile + rename. The file
+/// is created with mode 0600 (bridge credentials carry a bearer
+/// secret). A crash between the temp write and the rename leaves the
+/// previous file intact — `std::fs::write` alone could leave a
+/// half-written file containing only the `machine_id` line and no
+/// host/token.
+fn atomic_write_0600(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = dir.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("credentials")
+    ));
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -237,7 +278,23 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
         store,
     };
 
-    client::run_bridge_client(cfg).await
+    // Out-of-process bridge: a terminal auth error (401 on upgrade,
+    // 4004 kicked, 4005 token_revoked) is a user-actionable signal,
+    // not a transient failure. Print the message and exit 2 so process
+    // supervisors stop restarting and a human notices. Any other error
+    // bubbles up to clap, which exits 1.
+    match client::run_bridge_client(cfg).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if let Some(terminal) =
+                err.downcast_ref::<chorus::bridge::client::BridgeTerminalError>()
+            {
+                eprintln!("\n{terminal}\n");
+                std::process::exit(2);
+            }
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +351,33 @@ machine_id = "laptop-zht"
         let (http, ws) = derive_urls("chorus.example.com");
         assert_eq!(http, "https://chorus.example.com");
         assert_eq!(ws, "wss://chorus.example.com/api/bridge/ws");
+    }
+
+    #[test]
+    fn derive_urls_production_host_with_port_stays_tls() {
+        // Regression for ultrareview finding #13: an explicit port on
+        // a non-loopback host must NOT downgrade to plaintext.
+        let (http, ws) = derive_urls("chorus.example.com:8443");
+        assert_eq!(http, "https://chorus.example.com:8443");
+        assert_eq!(ws, "wss://chorus.example.com:8443/api/bridge/ws");
+    }
+
+    #[test]
+    fn derive_urls_loopback_aliases_use_plaintext() {
+        for host in ["localhost", "127.0.0.1", "[::1]"] {
+            let (http, _) = derive_urls(host);
+            assert!(
+                http.starts_with("http://"),
+                "loopback host {host} should default to http, got {http}"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_urls_respects_explicit_http_scheme() {
+        let (http, ws) = derive_urls("http://localhost:3001");
+        assert_eq!(http, "http://localhost:3001");
+        assert_eq!(ws, "ws://localhost:3001/api/bridge/ws");
     }
 
     #[test]

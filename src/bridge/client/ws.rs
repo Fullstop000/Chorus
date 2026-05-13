@@ -245,6 +245,30 @@ async fn queue_frame(
     }
 }
 
+/// Errors that mean the bridge should NOT reconnect — the operator
+/// must intervene (re-onboard, rotate, etc.). The retry loop short-
+/// circuits on these. The caller (out-of-process `chorus bridge` vs.
+/// in-process `chorus serve`) decides whether to exit the process or
+/// just log the situation.
+#[derive(Debug, thiserror::Error)]
+pub enum BridgeTerminalError {
+    #[error(
+        "chorus bridge: token was rotated or revoked. Get a new onboarding script from \
+         Settings → Devices on the platform and re-run it on this device."
+    )]
+    TokenRevokedOnUpgrade,
+    #[error(
+        "chorus bridge: this device was disconnected from the platform. Re-onboard from \
+         Settings → Devices to reconnect."
+    )]
+    Kicked,
+    #[error(
+        "chorus bridge: bridge token was rotated. Get the new onboarding script from \
+         Settings → Devices and re-run it."
+    )]
+    TokenRevoked,
+}
+
 pub async fn run_ws_client_loop(
     cfg: BridgeClientConfig,
     manager: Arc<AgentManager>,
@@ -283,6 +307,13 @@ pub async fn run_ws_client_loop(
                 backoff_ms = INITIAL_BACKOFF_MS;
             }
             Err(e) => {
+                // Surface terminal errors (rotate/kick/401) to the
+                // caller WITHOUT reconnect-backoff. The retry loop is
+                // only for transient network drops.
+                if let Some(terminal) = e.downcast_ref::<BridgeTerminalError>() {
+                    tracing::error!(reason = %terminal, "bridge: terminal error; not reconnecting");
+                    return Err(e);
+                }
                 tracing::warn!(err = %e, backoff_ms, "bridge: WS session failed; reconnecting");
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
@@ -321,16 +352,13 @@ async fn run_one_session(
         Ok(pair) => pair,
         Err(err) => {
             // HTTP 401 on the WS upgrade means the bearer was rotated
-            // or revoked. There is no recovery loop — exit so the
-            // operator notices instead of spinning in backoff forever.
+            // or revoked. Terminal — surface via a typed error so
+            // out-of-process bridge callers can exit 2 while
+            // `chorus serve`'s in-process bridge can log + skip
+            // reconnect without killing the platform process.
             if let tokio_tungstenite::tungstenite::Error::Http(ref resp) = err {
                 if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED {
-                    eprintln!(
-                        "\nchorus bridge: token was rotated or revoked.\n\
-                         Get a new onboarding script from Settings → Devices on the platform\n\
-                         and re-run it on this device.\n"
-                    );
-                    std::process::exit(2);
+                    return Err(BridgeTerminalError::TokenRevokedOnUpgrade.into());
                 }
             }
             return Err(err.into());
@@ -491,20 +519,8 @@ async fn run_one_session(
                         if let Some(f) = frame {
                             let code: u16 = f.code.into();
                             match code {
-                                4004 => {
-                                    eprintln!(
-                                        "\nchorus bridge: this device was disconnected from the platform.\n\
-                                         Re-onboard from Settings → Devices to reconnect.\n"
-                                    );
-                                    std::process::exit(2);
-                                }
-                                4005 => {
-                                    eprintln!(
-                                        "\nchorus bridge: bridge token was rotated.\n\
-                                         Get the new onboarding script from Settings → Devices and re-run it.\n"
-                                    );
-                                    std::process::exit(2);
-                                }
+                                4004 => return Err(BridgeTerminalError::Kicked.into()),
+                                4005 => return Err(BridgeTerminalError::TokenRevoked.into()),
                                 _ => {
                                     tracing::info!(close_code = code, "bridge: peer sent Close");
                                 }

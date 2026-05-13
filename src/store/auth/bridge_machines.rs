@@ -69,21 +69,43 @@ impl Store {
     ) -> Result<(BridgeMachine, HelloOutcome)> {
         let conn = self.lock_conn();
 
-        // Cross-user takeover guard. Under dev-auth multi-user, two users
+        // Cross-user takeover guard. Two users on a dev-auth install
         // could pick the same hostname for their machines. Without this
         // check, user B's bridge claiming `machine_id="laptop"` would
         // get cross-access to user A's agents (which were tagged with
-        // the same string). Reject if any ACTIVE bridge_machines row
-        // exists for this machine_id under a DIFFERENT account.
+        // the same string in `agents.machine_id`). Reject the hello if
+        // EITHER of these is true under a DIFFERENT account:
+        //   1. an active `bridge_machines` row exists for this machine_id
+        //   2. a non-revoked LEGACY per-machine bridge token exists
+        //      bound to this machine_id (`api_tokens.machine_id` set)
+        //
+        // Case 2 covers the install-time scenario: `chorus setup --yes`
+        // mints a legacy bridge token bound to the install's
+        // `local_machine_id`. A dev-auth user who guesses that id MUST
+        // be rejected even though the legacy token doesn't have a
+        // bridge_machines row.
         let conflict: Option<String> = conn
             .query_row(
-                "SELECT bm.token_hash
-                   FROM bridge_machines bm
-                   JOIN api_tokens at_in ON at_in.token_hash = ?1
-                   JOIN api_tokens at_ex ON at_ex.token_hash = bm.token_hash
-                  WHERE bm.machine_id = ?2
-                    AND bm.disconnected_at IS NULL
-                    AND at_ex.account_id != at_in.account_id
+                "SELECT at_in.token_hash
+                   FROM api_tokens at_in
+                  WHERE at_in.token_hash = ?1
+                    AND (
+                      EXISTS (
+                        SELECT 1
+                          FROM bridge_machines bm
+                          JOIN api_tokens at_ex ON at_ex.token_hash = bm.token_hash
+                         WHERE bm.machine_id = ?2
+                           AND bm.disconnected_at IS NULL
+                           AND at_ex.account_id != at_in.account_id
+                      )
+                      OR EXISTS (
+                        SELECT 1
+                          FROM api_tokens at_legacy
+                         WHERE at_legacy.machine_id = ?2
+                           AND at_legacy.revoked_at IS NULL
+                           AND at_legacy.account_id != at_in.account_id
+                      )
+                    )
                   LIMIT 1",
                 params![token_hash, machine_id],
                 |r| r.get::<_, String>(0),
