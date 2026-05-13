@@ -71,11 +71,7 @@ fn parse_credentials(toml_text: &str) -> anyhow::Result<BridgeCredentials> {
         match key {
             "host" => host = Some(value),
             "token" => token = Some(value),
-            "machine_id" => {
-                if !value.is_empty() {
-                    machine_id = Some(value);
-                }
-            }
+            "machine_id" if !value.is_empty() => machine_id = Some(value),
             _ => {}
         }
     }
@@ -109,8 +105,10 @@ fn derive_urls(host: &str) -> (String, String) {
         .trim_end_matches('/')
         .to_string();
     let host_only = bare.split(':').next().unwrap_or("").to_string();
-    let plaintext = matches!(host_only.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1")
-        || bare.contains(':');
+    let plaintext = matches!(
+        host_only.as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1"
+    ) || bare.contains(':');
     let (http_scheme, ws_scheme) = if plaintext {
         ("http", "ws")
     } else {

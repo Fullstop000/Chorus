@@ -60,10 +60,7 @@ pub async fn handle_list_devices(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
 ) -> Response {
-    let token = match state
-        .store
-        .find_active_user_bridge_token(&actor.account_id)
-    {
+    let token = match state.store.find_active_user_bridge_token(&actor.account_id) {
         Ok(Some(t)) => t,
         Ok(None) => return Json(Vec::<DeviceDto>::new()).into_response(),
         Err(err) => {
@@ -104,10 +101,7 @@ pub async fn handle_mint_device(
     Extension(actor): Extension<Actor>,
     headers: HeaderMap,
 ) -> Response {
-    match state
-        .store
-        .find_active_user_bridge_token(&actor.account_id)
-    {
+    match state.store.find_active_user_bridge_token(&actor.account_id) {
         Ok(Some(_)) => {
             return (
                 StatusCode::GONE,
@@ -144,17 +138,11 @@ pub async fn handle_rotate_device(
     Extension(actor): Extension<Actor>,
     headers: HeaderMap,
 ) -> Response {
-    if let Ok(Some(existing)) = state
-        .store
-        .find_active_user_bridge_token(&actor.account_id)
-    {
+    if let Ok(Some(existing)) = state.store.find_active_user_bridge_token(&actor.account_id) {
         // Soft-revoke. The store's `revoke_token_by_raw` only takes the
         // raw — we never have it for an existing token. Use the hash
         // path. Add a dedicated helper.
-        if let Err(err) = state
-            .store
-            .revoke_token_by_hash(&existing.token_hash)
-        {
+        if let Err(err) = state.store.revoke_token_by_hash(&existing.token_hash) {
             warn!(err = %err, "rotate device: revoke failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
         }
@@ -194,10 +182,7 @@ pub async fn handle_delete_device(
     Path(machine_id): Path<String>,
     Query(q): Query<DeleteDeviceQuery>,
 ) -> Response {
-    let token = match state
-        .store
-        .find_active_user_bridge_token(&actor.account_id)
-    {
+    let token = match state.store.find_active_user_bridge_token(&actor.account_id) {
         Ok(Some(t)) => t,
         Ok(None) => return (StatusCode::NOT_FOUND, "no bridge token for user").into_response(),
         Err(err) => {
@@ -207,9 +192,13 @@ pub async fn handle_delete_device(
     };
     let forget = matches!(q.forget.as_deref(), Some("1") | Some("true"));
     let result = if forget {
-        state.store.forget_bridge_machine(&token.token_hash, &machine_id)
+        state
+            .store
+            .forget_bridge_machine(&token.token_hash, &machine_id)
     } else {
-        state.store.kick_bridge_machine(&token.token_hash, &machine_id)
+        state
+            .store
+            .kick_bridge_machine(&token.token_hash, &machine_id)
     };
     match result {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -290,7 +279,10 @@ mod tests {
     #[test]
     fn host_reads_host_header() {
         let mut h = HeaderMap::new();
-        h.insert(axum::http::header::HOST, "chorus.example:3001".parse().unwrap());
+        h.insert(
+            axum::http::header::HOST,
+            "chorus.example:3001".parse().unwrap(),
+        );
         assert_eq!(host_from_headers(&h), "chorus.example:3001");
     }
 }

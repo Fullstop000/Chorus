@@ -76,10 +76,8 @@ impl Store {
                      VALUES (?1, ?2, ?3)",
                     params![token_hash, machine_id, hostname_hint],
                 )?;
-                let row =
-                    Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?.ok_or_else(
-                        || anyhow::anyhow!("bridge_machine vanished after insert"),
-                    )?;
+                let row = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?
+                    .ok_or_else(|| anyhow::anyhow!("bridge_machine vanished after insert"))?;
                 Ok((row, HelloOutcome::Inserted))
             }
             Some(row) if row.is_kicked() => Ok((row, HelloOutcome::Rejected)),
@@ -94,10 +92,8 @@ impl Store {
                      WHERE token_hash = ?1 AND machine_id = ?2",
                     params![token_hash, machine_id, hostname_hint],
                 )?;
-                let refreshed =
-                    Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?.ok_or_else(
-                        || anyhow::anyhow!("bridge_machine vanished after refresh"),
-                    )?;
+                let refreshed = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?
+                    .ok_or_else(|| anyhow::anyhow!("bridge_machine vanished after refresh"))?;
                 let outcome = if row.is_active() {
                     HelloOutcome::Superseded
                 } else {
@@ -318,6 +314,9 @@ mod tests {
                 params![token_hash],
             )
             .unwrap();
-        assert!(s.list_bridge_machines_for_token(&token_hash).unwrap().is_empty());
+        assert!(s
+            .list_bridge_machines_for_token(&token_hash)
+            .unwrap()
+            .is_empty());
     }
 }

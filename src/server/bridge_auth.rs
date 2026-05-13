@@ -1,19 +1,20 @@
 //! Bridge bearer-token authentication.
 //!
 //! Token shapes (`(provider, machine_id)`):
-//!   - `("local",  None)`         → CLI bearer. CLI may act as its own
-//!                                   user only — `/internal/agent/{user_id}/*`.
-//!   - `("bridge", Some(m))`      → Legacy per-machine bridge. Restricted
-//!                                   to agents whose `agents.machine_id = m`.
-//!   - `("bridge", None)`         → User-scoped bridge. Allowed to act on
-//!                                   agents whose `agents.machine_id`
-//!                                   corresponds to an active (non-kicked)
-//!                                   `bridge_machines` row for this token,
-//!                                   OR to act as the user itself.
 //!
-//! Passthrough mode: when no bridge tokens exist at all (provider='bridge'),
-//! the middleware passes every request through unauthenticated. Once any
-//! bridge token exists, all `/internal/agent/*` requests need a valid bearer.
+//! - `("local",  None)` — CLI bearer. CLI may act as its own user only,
+//!   i.e. `/internal/agent/{user_id}/*`.
+//! - `("bridge", Some(m))` — Legacy per-machine bridge. Restricted to
+//!   agents whose `agents.machine_id = m`.
+//! - `("bridge", None)` — User-scoped bridge. Allowed to act on agents
+//!   whose `agents.machine_id` corresponds to an active (non-kicked)
+//!   `bridge_machines` row for this token, OR to act as the user
+//!   itself.
+//!
+//! Passthrough mode: when no bridge tokens exist at all
+//! (`provider='bridge'`), the middleware passes every request through
+//! unauthenticated. Once any bridge token exists, all `/internal/agent/*`
+//! requests need a valid bearer.
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -41,10 +42,7 @@ pub enum AuthOutcome {
     /// Bearer matched a user-scoped bridge token. May act on agents
     /// whose `agents.machine_id` corresponds to an active (non-kicked)
     /// `bridge_machines` row for this `token_hash`, or as the user itself.
-    UserBridgeAllowed {
-        user_id: String,
-        token_hash: String,
-    },
+    UserBridgeAllowed { user_id: String, token_hash: String },
     /// Missing/malformed header, unknown token, or revoked.
     Rejected,
 }
@@ -267,7 +265,10 @@ pub async fn require_bridge_auth(
                     return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
                 }
             };
-            match state.store.get_bridge_machine(&token_hash, &agent_machine_id) {
+            match state
+                .store
+                .get_bridge_machine(&token_hash, &agent_machine_id)
+            {
                 Ok(Some(m)) if !m.is_kicked() => next.run(req).await,
                 Ok(_) => {
                     warn!(

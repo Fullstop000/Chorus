@@ -159,7 +159,11 @@ pub async fn handle_dev_login(
                 user_id = %account.user_id,
                 "dev-login: account points to non-existent user"
             );
-            return (StatusCode::INTERNAL_SERVER_ERROR, "user not found for account").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "user not found for account",
+            )
+                .into_response();
         }
         Err(err) => {
             warn!(err = %err, "dev-login: user lookup failed");

@@ -217,10 +217,7 @@ impl Store {
     /// Find the active user-scoped bridge token for an account, if any.
     /// Used by the device-onboarding mint route: returns `None` for "OK,
     /// mint a fresh one"; `Some(_)` for "already minted, force Rotate."
-    pub fn find_active_user_bridge_token(
-        &self,
-        account_id: &str,
-    ) -> Result<Option<ApiToken>> {
+    pub fn find_active_user_bridge_token(&self, account_id: &str) -> Result<Option<ApiToken>> {
         let conn = self.lock_conn();
         conn.query_row(
             "SELECT token_hash, account_id, provider, machine_id, label, created_at, last_used_at, revoked_at

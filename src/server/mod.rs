@@ -251,13 +251,13 @@ pub fn build_router_with_services(
         )
         .route("/agents", get(handle_list_agents).post(handle_create_agent))
         // Settings → Devices: user-scoped bridge token onboarding.
-        .route(
-            "/devices",
-            get(devices::handle_list_devices),
-        )
+        .route("/devices", get(devices::handle_list_devices))
         .route("/devices/mint", post(devices::handle_mint_device))
         .route("/devices/rotate", post(devices::handle_rotate_device))
-        .route("/devices/{machine_id}", delete(devices::handle_delete_device))
+        .route(
+            "/devices/{machine_id}",
+            delete(devices::handle_delete_device),
+        )
         .route("/runtimes", get(handle_list_runtime_statuses))
         .route(
             "/runtimes/{runtime}/models",
@@ -346,8 +346,7 @@ pub fn build_router_with_services(
         .route("/bridge/ws", get(handle_bridge_ws))
         .route("/events/ws", get(handle_events_ws));
     if state.dev_auth.enabled {
-        api_open_router =
-            api_open_router.route("/auth/dev-login", post(auth::handle_dev_login));
+        api_open_router = api_open_router.route("/auth/dev-login", post(auth::handle_dev_login));
     }
 
     Router::new()
