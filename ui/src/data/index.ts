@@ -185,6 +185,7 @@ export {
   forgetDevice,
   getHealth,
   type Device,
+  type DevicesList,
   type MintResponse,
   type HealthInfo,
 } from './devices'

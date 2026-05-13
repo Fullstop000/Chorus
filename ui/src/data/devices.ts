@@ -15,8 +15,13 @@ export interface MintResponse {
   host: string
 }
 
-export function listDevices(): Promise<Device[]> {
-  return get<Device[]>('/api/devices')
+export interface DevicesList {
+  has_token: boolean
+  devices: Device[]
+}
+
+export function listDevices(): Promise<DevicesList> {
+  return get<DevicesList>('/api/devices')
 }
 
 export function mintDevice(): Promise<MintResponse> {

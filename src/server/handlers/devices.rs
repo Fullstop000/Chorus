@@ -53,29 +53,46 @@ impl From<BridgeMachine> for DeviceDto {
     }
 }
 
-/// `GET /api/devices` — list the current user's onboarded devices.
-/// Empty array if the user has no bridge token yet OR has never
-/// onboarded anything.
+#[derive(Debug, Serialize)]
+pub struct DevicesListResponse {
+    /// True iff this user has an active (non-revoked) user-scoped bridge
+    /// token. The UI uses this to switch the CTA between "Onboard a
+    /// device" (false: mint) and "Rotate token" (true: rotate).
+    pub has_token: bool,
+    pub devices: Vec<DeviceDto>,
+}
+
+/// `GET /api/devices` — list the current user's onboarded devices and
+/// whether a bridge token has been minted at all. Returns an envelope
+/// so the UI can tell apart "no token yet" from "token exists but no
+/// machine has connected."
 pub async fn handle_list_devices(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
 ) -> Response {
     let token = match state.store.find_active_user_bridge_token(&actor.account_id) {
-        Ok(Some(t)) => t,
-        Ok(None) => return Json(Vec::<DeviceDto>::new()).into_response(),
+        Ok(t) => t,
         Err(err) => {
             warn!(err = %err, "list devices: token lookup failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
         }
     };
+    let Some(token) = token else {
+        return Json(DevicesListResponse {
+            has_token: false,
+            devices: Vec::new(),
+        })
+        .into_response();
+    };
     match state
         .store
         .list_bridge_machines_for_token(&token.token_hash)
     {
-        Ok(rows) => {
-            let dtos: Vec<DeviceDto> = rows.into_iter().map(DeviceDto::from).collect();
-            Json(dtos).into_response()
-        }
+        Ok(rows) => Json(DevicesListResponse {
+            has_token: true,
+            devices: rows.into_iter().map(DeviceDto::from).collect(),
+        })
+        .into_response(),
         Err(err) => {
             warn!(err = %err, "list devices: bridge_machines lookup failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response()

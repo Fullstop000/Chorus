@@ -62,7 +62,7 @@ async fn list_devices_returns_empty_when_no_token_minted() {
     let resp = router.oneshot(auth_get("/api/devices")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert_eq!(body, serde_json::json!([]));
+    assert_eq!(body, serde_json::json!({"has_token": false, "devices": []}));
 }
 
 #[tokio::test]
@@ -152,8 +152,9 @@ async fn list_devices_returns_registered_machines() {
 
     let resp = router.oneshot(auth_get("/api/devices")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let arr = json_body(resp).await;
-    let arr = arr.as_array().unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["has_token"], true);
+    let arr = body["devices"].as_array().unwrap();
     assert_eq!(arr.len(), 2);
     let ids: Vec<&str> = arr
         .iter()

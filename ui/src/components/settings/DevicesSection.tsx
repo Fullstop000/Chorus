@@ -31,6 +31,7 @@ function deviceStatus(d: Device): { label: string; tone: 'active' | 'offline' | 
 
 export function DevicesSection() {
   const [devices, setDevices] = useState<Device[]>([])
+  const [hasToken, setHasToken] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [revealed, setRevealed] = useState<MintResponse | null>(null)
@@ -43,8 +44,9 @@ export function DevicesSection() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const rows = await listDevices()
-      setDevices(rows)
+      const resp = await listDevices()
+      setDevices(resp.devices)
+      setHasToken(resp.has_token)
       setRefreshError(null)
     } catch (err) {
       setRefreshError(err instanceof Error ? err.message : 'failed to load devices')
@@ -64,6 +66,9 @@ export function DevicesSection() {
       const resp = await mintDevice()
       setRevealed(resp)
       setRevealLabel('mint')
+      // Token now exists server-side; reflect locally so the CTA flips
+      // to "Rotate" once the user dismisses the reveal panel.
+      setHasToken(true)
     } catch (err) {
       if (err instanceof ApiError && err.status === 410) {
         setActionError('A bridge token already exists. Use Rotate to mint a new one.')
@@ -135,7 +140,7 @@ export function DevicesSection() {
     void refresh()
   }
 
-  const hasAnyToken = devices.length > 0
+  const hasAnyToken = hasToken
 
   return (
     <div className="settings-section">
