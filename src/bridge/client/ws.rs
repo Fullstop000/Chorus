@@ -317,7 +317,25 @@ async fn run_one_session(
     }
 
     tracing::info!(url = %cfg.platform_ws, "bridge: dialing platform");
-    let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
+    let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
+        Ok(pair) => pair,
+        Err(err) => {
+            // HTTP 401 on the WS upgrade means the bearer was rotated
+            // or revoked. There is no recovery loop — exit so the
+            // operator notices instead of spinning in backoff forever.
+            if let tokio_tungstenite::tungstenite::Error::Http(ref resp) = err {
+                if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED {
+                    eprintln!(
+                        "\nchorus bridge: token was rotated or revoked.\n\
+                         Get a new onboarding script from Settings → Devices on the platform\n\
+                         and re-run it on this device.\n"
+                    );
+                    std::process::exit(2);
+                }
+            }
+            return Err(err.into());
+        }
+    };
     let (mut write, mut read) = ws_stream.split();
 
     // 1. Send bridge.hello with currently-known agents.
@@ -464,8 +482,36 @@ async fn run_one_session(
                             }
                         }
                     }
-                    Message::Close(_) => {
-                        tracing::info!("bridge: peer sent Close");
+                    Message::Close(frame) => {
+                        // Inspect close code for terminal signals from
+                        // the platform. 4004 = device Kicked, 4005 =
+                        // token Rotated. Both are non-recoverable; the
+                        // bridge exits non-zero so a process supervisor
+                        // stops restarting and a human notices.
+                        if let Some(f) = frame {
+                            let code: u16 = f.code.into();
+                            match code {
+                                4004 => {
+                                    eprintln!(
+                                        "\nchorus bridge: this device was disconnected from the platform.\n\
+                                         Re-onboard from Settings → Devices to reconnect.\n"
+                                    );
+                                    std::process::exit(2);
+                                }
+                                4005 => {
+                                    eprintln!(
+                                        "\nchorus bridge: bridge token was rotated.\n\
+                                         Get the new onboarding script from Settings → Devices and re-run it.\n"
+                                    );
+                                    std::process::exit(2);
+                                }
+                                _ => {
+                                    tracing::info!(close_code = code, "bridge: peer sent Close");
+                                }
+                            }
+                        } else {
+                            tracing::info!("bridge: peer sent Close");
+                        }
                         break;
                     }
                     Message::Ping(p) => {

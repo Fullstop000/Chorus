@@ -124,32 +124,20 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
-    /// Run a remote bridge: connect to a platform via WebSocket, host
-    /// local agent runtimes, and proxy MCP tool-calls back to the platform.
+    /// Run a remote bridge: connect to a platform over WebSocket, host
+    /// local agent runtimes, and proxy MCP tool-calls back to the
+    /// platform.
+    ///
+    /// Zero-arg happy path: reads `bridge-credentials.toml` from the
+    /// default data dir ($XDG_DATA_HOME/chorus/bridge). The file is
+    /// written by the one-liner script you paste from Settings →
+    /// Devices on the platform. machine_id is auto-derived from
+    /// `hostname` on first run and persisted back.
     Bridge {
-        /// Platform WebSocket URL (e.g. ws://platform.host:3001/api/bridge/ws).
-        #[arg(long)]
-        platform_ws: String,
-        /// Platform HTTP base URL (e.g. http://platform.host:3001) for MCP proxy.
-        #[arg(long)]
-        platform_http: String,
-        /// Bearer token for the WS upgrade. Must match a row in the
-        /// platform's `api_tokens` table with `machine_id` set to this
-        /// bridge's `--machine-id`. Mint one on the platform host with
-        /// `chorus tokens mint --bridge --machine-id <id>` (or use the
-        /// `bridge-credentials.toml` written by `chorus setup` for the
-        /// local install).
-        #[arg(long, env = "CHORUS_BRIDGE_TOKEN")]
-        token: Option<String>,
-        /// Stable identifier for this bridge instance.
-        #[arg(long)]
-        machine_id: String,
-        /// Local data directory for the bridge (separate from any platform data).
+        /// Override the default data dir
+        /// ($XDG_DATA_HOME/chorus/bridge).
         #[arg(long)]
         data_dir: Option<String>,
-        /// Loopback bind for the embedded MCP bridge that local agents talk to.
-        #[arg(long, default_value = "127.0.0.1:0")]
-        bridge_listen: String,
     },
     /// Read-only environment diagnostic
     Check {
@@ -461,27 +449,9 @@ pub async fn run() -> anyhow::Result<()> {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
         }
 
-        Some(Commands::Bridge {
-            platform_ws,
-            platform_http,
-            token,
-            machine_id,
-            data_dir,
-            bridge_listen,
-        }) => {
-            let data_dir_str = data_dir.unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-                format!("{home}/.chorus-bridge")
-            });
-            bridge::run(
-                platform_ws,
-                platform_http,
-                token,
-                machine_id,
-                data_dir_str,
-                bridge_listen,
-            )
-            .await
+        Some(Commands::Bridge { data_dir }) => {
+            let data_dir_str = data_dir.unwrap_or_else(bridge::default_bridge_data_dir);
+            bridge::run(data_dir_str).await
         }
 
         Some(Commands::Send {
