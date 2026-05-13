@@ -13,7 +13,7 @@
 //! `docs/plan/dev-auth-and-bridge-onboarding.md` §4.4.
 
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -156,12 +156,29 @@ pub async fn handle_rotate_device(
     headers: HeaderMap,
 ) -> Response {
     if let Ok(Some(existing)) = state.store.find_active_user_bridge_token(&actor.account_id) {
-        // Soft-revoke. The store's `revoke_token_by_raw` only takes the
-        // raw — we never have it for an existing token. Use the hash
-        // path. Add a dedicated helper.
+        // Snapshot machine_ids before revoke so we can close their live
+        // WS sessions with 4005 (token_revoked) after the row is
+        // invalidated. Without this, the bridge stays connected on a
+        // dead bearer until its next /internal/* call 401s.
+        let machines = state
+            .store
+            .list_bridge_machines_for_token(&existing.token_hash)
+            .unwrap_or_default();
         if let Err(err) = state.store.revoke_token_by_hash(&existing.token_hash) {
             warn!(err = %err, "rotate device: revoke failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
+        }
+        for m in &machines {
+            let n = state
+                .bridge_registry
+                .signal_close_machine(&m.machine_id, 4005);
+            if n > 0 {
+                tracing::info!(
+                    machine_id = %m.machine_id,
+                    signaled = n,
+                    "rotate: live bridge signaled with 4005 token_revoked"
+                );
+            }
         }
     }
     let minted = match state
@@ -218,7 +235,22 @@ pub async fn handle_delete_device(
             .kick_bridge_machine(&token.token_hash, &machine_id)
     };
     match result {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            // Disconnect any live WS for this machine_id with WS close
+            // 4004 `kicked` so the bridge sees an actionable signal
+            // immediately instead of looping until a /internal/* call
+            // happens to fail auth.
+            let signaled = state
+                .bridge_registry
+                .signal_close_machine(&machine_id, 4004);
+            tracing::info!(
+                machine_id = %machine_id,
+                forget,
+                signaled,
+                "device: deleted; live bridges signaled with 4004"
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, "device not found").into_response(),
         Err(err) => {
             warn!(err = %err, forget, "delete device: store error");
@@ -228,51 +260,68 @@ pub async fn handle_delete_device(
 }
 
 /// Resolve the host the client used to reach us, for the onboarding
-/// script. Tries `Host` header (sane reverse-proxy default) and falls
-/// back to a placeholder the operator can edit. Strips a leading
-/// `http(s)://` if present.
+/// script. Reads the `Host` header and restricts to a strict
+/// host-charset allowlist (`[A-Za-z0-9.:-]+`). Anything else falls
+/// back to the placeholder.
+///
+/// Hardening: the result is interpolated into a bash heredoc the
+/// operator pastes into a terminal. A Host header containing
+/// shell-metacharacters or command substitutions (`$(...)`, backticks)
+/// could be evaluated when the script runs. Allowlist + the quoted
+/// heredoc in `render_onboarding_script` are layered defense.
 fn host_from_headers(headers: &HeaderMap) -> String {
-    let from_host = headers
+    const PLACEHOLDER: &str = "chorus.your.host";
+    let raw = match headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    from_host.unwrap_or_else(|| "chorus.your.host".to_string())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s,
+        None => return PLACEHOLDER.to_string(),
+    };
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '_' | '[' | ']'))
+    {
+        warn!(host = %raw, "devices: Host header contains unsafe characters; using placeholder");
+        return PLACEHOLDER.to_string();
+    }
+    raw.to_string()
 }
 
 /// Build the bash script body shown to the operator. Bearer literal is
 /// embedded. The Settings UI hands this to a copy-block; the operator
 /// pastes into the target device's terminal.
+///
+/// The credentials heredoc is single-quoted (`<<'EOF'`) so bash will
+/// NOT evaluate `$VAR` / `$(...)` inside the body even if `host` or
+/// `bearer` somehow contained shell metacharacters. The other strings
+/// (echo lines) go through `host_from_headers`' allowlist.
 fn render_onboarding_script(host: &str, bearer: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
 
 if ! command -v chorus >/dev/null 2>&1; then
-  echo "Install Chorus first:"
-  echo "  cargo install --git https://github.com/Fullstop000/Chorus chorus"
+  echo 'Install Chorus first:'
+  echo '  cargo install --git https://github.com/Fullstop000/Chorus chorus'
   exit 1
 fi
 
 DATA_DIR="${{XDG_DATA_HOME:-$HOME/.local/share}}/chorus/bridge"
 mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR"
 umask 077
-cat > "$DATA_DIR/bridge-credentials.toml" <<EOF
+cat > "$DATA_DIR/bridge-credentials.toml" <<'EOF'
 host  = "{host}"
 token = "{bearer}"
 EOF
 
-echo "Connecting → {host} …"
+printf 'Connecting → %s …\n' "{host}"
 exec chorus bridge
 "#
     )
 }
-
-// `header` was used implicitly above; suppress the unused warning when no
-// upstream import is in scope. (Axum reexports header types but only the
-// HeaderMap is used here.)
-#[allow(dead_code)]
-fn _unused_response_imports(_: HeaderValue) {}
 
 #[cfg(test)]
 mod tests {

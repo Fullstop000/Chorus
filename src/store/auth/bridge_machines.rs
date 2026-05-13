@@ -68,40 +68,76 @@ impl Store {
         hostname_hint: Option<&str>,
     ) -> Result<(BridgeMachine, HelloOutcome)> {
         let conn = self.lock_conn();
-        let existing = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?;
-        match existing {
-            None => {
-                conn.execute(
-                    "INSERT INTO bridge_machines (token_hash, machine_id, hostname_hint)
-                     VALUES (?1, ?2, ?3)",
-                    params![token_hash, machine_id, hostname_hint],
-                )?;
-                let row = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?
-                    .ok_or_else(|| anyhow::anyhow!("bridge_machine vanished after insert"))?;
-                Ok((row, HelloOutcome::Inserted))
-            }
-            Some(row) if row.is_kicked() => Ok((row, HelloOutcome::Rejected)),
-            Some(row) => {
-                // Clear `disconnected_at` (the row is live again), bump
-                // `last_seen_at`, refresh `hostname_hint`.
-                conn.execute(
-                    "UPDATE bridge_machines
-                       SET disconnected_at = NULL,
-                           last_seen_at    = datetime('now'),
-                           hostname_hint   = COALESCE(?3, hostname_hint)
-                     WHERE token_hash = ?1 AND machine_id = ?2",
-                    params![token_hash, machine_id, hostname_hint],
-                )?;
-                let refreshed = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?
-                    .ok_or_else(|| anyhow::anyhow!("bridge_machine vanished after refresh"))?;
-                let outcome = if row.is_active() {
-                    HelloOutcome::Superseded
-                } else {
-                    HelloOutcome::Reconnected
-                };
-                Ok((refreshed, outcome))
+
+        // Cross-user takeover guard. Under dev-auth multi-user, two users
+        // could pick the same hostname for their machines. Without this
+        // check, user B's bridge claiming `machine_id="laptop"` would
+        // get cross-access to user A's agents (which were tagged with
+        // the same string). Reject if any ACTIVE bridge_machines row
+        // exists for this machine_id under a DIFFERENT account.
+        let conflict: Option<String> = conn
+            .query_row(
+                "SELECT bm.token_hash
+                   FROM bridge_machines bm
+                   JOIN api_tokens at_in ON at_in.token_hash = ?1
+                   JOIN api_tokens at_ex ON at_ex.token_hash = bm.token_hash
+                  WHERE bm.machine_id = ?2
+                    AND bm.disconnected_at IS NULL
+                    AND at_ex.account_id != at_in.account_id
+                  LIMIT 1",
+                params![token_hash, machine_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(other_token) = conflict {
+            // Synthesize a Rejected row so the caller's close-code path
+            // fires. `kicked_at` doubles as the marker for "do not
+            // accept" semantics without persisting anything new.
+            let now = Utc::now();
+            return Ok((
+                BridgeMachine {
+                    token_hash: other_token,
+                    machine_id: machine_id.to_string(),
+                    hostname_hint: hostname_hint.map(|s| s.to_string()),
+                    first_seen_at: now,
+                    last_seen_at: now,
+                    disconnected_at: Some(now),
+                    kicked_at: Some(now),
+                },
+                HelloOutcome::Rejected,
+            ));
+        }
+
+        // Snapshot the pre-existing row (if any) so we can return the
+        // right outcome AND short-circuit on Kick before mutating
+        // anything.
+        let prior = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?;
+        if let Some(ref row) = prior {
+            if row.is_kicked() {
+                return Ok((row.clone(), HelloOutcome::Rejected));
             }
         }
+
+        // Race-safe upsert. Two simultaneous hellos for the same
+        // (token, machine_id) used to crash on the UNIQUE PK
+        // constraint; now the second one updates the row instead.
+        conn.execute(
+            "INSERT INTO bridge_machines (token_hash, machine_id, hostname_hint)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(token_hash, machine_id) DO UPDATE
+               SET disconnected_at = NULL,
+                   last_seen_at    = datetime('now'),
+                   hostname_hint   = COALESCE(excluded.hostname_hint, hostname_hint)",
+            params![token_hash, machine_id, hostname_hint],
+        )?;
+        let row = Self::get_bridge_machine_inner(&conn, token_hash, machine_id)?
+            .ok_or_else(|| anyhow::anyhow!("bridge_machine vanished after upsert"))?;
+        let outcome = match prior {
+            None => HelloOutcome::Inserted,
+            Some(p) if p.is_active() => HelloOutcome::Superseded,
+            Some(_) => HelloOutcome::Reconnected,
+        };
+        Ok((row, outcome))
     }
 
     /// Mark a machine as no-longer-connected (clean WS drop / TCP timeout).
@@ -299,6 +335,60 @@ mod tests {
         let ids: Vec<&str> = machines.iter().map(|m| m.machine_id.as_str()).collect();
         assert!(ids.contains(&"laptop"));
         assert!(ids.contains(&"homelab"));
+    }
+
+    #[test]
+    fn cross_user_machine_id_collision_is_rejected() {
+        // Two users on one install pick the same hostname for their
+        // bridges. User A onboards "laptop"; user B's bridge hello with
+        // "laptop" must be REJECTED, not given cross-access to user A's
+        // agents. See PR #159 Gemini review finding #1.
+        let s = Store::open(":memory:").unwrap();
+        let u_a = s.create_user("alice").unwrap();
+        let acct_a = s.create_local_account(&u_a.id).unwrap();
+        let token_a = s.mint_user_bridge_token(&acct_a.id, None).unwrap();
+        let u_b = s.create_user("bob").unwrap();
+        let acct_b = s
+            .create_account(&u_b.id, "dev", Some("bob@dev.local"))
+            .unwrap();
+        let token_b = s.mint_user_bridge_token(&acct_b.id, None).unwrap();
+
+        // Alice connects "laptop".
+        let (_, outcome_a) = s
+            .register_bridge_machine_hello(&token_a.row.token_hash, "laptop", None)
+            .unwrap();
+        assert_eq!(outcome_a, HelloOutcome::Inserted);
+
+        // Bob attempts to claim the same machine_id.
+        let (_, outcome_b) = s
+            .register_bridge_machine_hello(&token_b.row.token_hash, "laptop", None)
+            .unwrap();
+        assert_eq!(
+            outcome_b,
+            HelloOutcome::Rejected,
+            "Bob's hello with Alice's machine_id must be rejected"
+        );
+    }
+
+    #[test]
+    fn concurrent_hellos_for_same_pair_do_not_violate_unique_constraint() {
+        // Race: two simultaneous bridge.hello calls for (token, machine).
+        // Both observe no prior row; the upsert handles the second one
+        // as a clean update instead of a SQLite UNIQUE constraint crash.
+        let (s, _, token_hash) = store_with_user_bridge_token();
+        let (_, o1) = s
+            .register_bridge_machine_hello(&token_hash, "laptop", None)
+            .unwrap();
+        let (_, o2) = s
+            .register_bridge_machine_hello(&token_hash, "laptop", None)
+            .unwrap();
+        assert_eq!(o1, HelloOutcome::Inserted);
+        assert_eq!(o2, HelloOutcome::Superseded);
+        // Idempotent third call.
+        let (row, _) = s
+            .register_bridge_machine_hello(&token_hash, "laptop", None)
+            .unwrap();
+        assert!(row.is_active());
     }
 
     #[test]

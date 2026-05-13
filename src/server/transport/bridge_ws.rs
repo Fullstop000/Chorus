@@ -210,7 +210,7 @@ async fn bridge_session(
     );
 
     let machine_id = hello.machine_id.clone();
-    let (mut outbound_rx, _registration) = registry.register(&machine_id);
+    let (mut outbound_rx, mut close_rx, _registration) = registry.register(&machine_id);
 
     if let Err(err) = send_initial_target(&mut socket, store.as_ref(), &machine_id).await {
         warn!(machine_id = %machine_id, error = %err, "bridge_ws: failed to send initial bridge.target");
@@ -233,6 +233,22 @@ async fn bridge_session(
     // from the bridge (`agent.state`, future `chat.ack`).
     loop {
         tokio::select! {
+            close_code = close_rx.recv() => {
+                // Out-of-band close signal from Kick (4004) or Rotate
+                // (4005). Send the matching Close frame and exit the
+                // session loop.
+                let code = match close_code {
+                    Some(c) => c,
+                    None => break, // Registry dropped; clean session end.
+                };
+                let reason: &'static str = match code {
+                    4004 => "kicked",
+                    4005 => "token_revoked",
+                    _ => "closed",
+                };
+                close_with(&mut socket, code, reason).await;
+                break;
+            }
             outbound = outbound_rx.recv() => {
                 match outbound {
                     Some(text) => {

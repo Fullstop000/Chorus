@@ -40,52 +40,29 @@ pub fn default_bridge_data_dir() -> String {
     format!("{base}/chorus/bridge")
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
 struct BridgeCredentials {
     host: String,
     token: String,
+    #[serde(default)]
     machine_id: Option<String>,
 }
 
 fn parse_credentials(toml_text: &str) -> anyhow::Result<BridgeCredentials> {
-    let mut host: Option<String> = None;
-    let mut token: Option<String> = None;
-    let mut machine_id: Option<String> = None;
-    for line in toml_text.lines() {
-        let stripped = match line.split_once('#') {
-            Some((before, _)) => before,
-            None => line,
-        };
-        let stripped = stripped.trim();
-        if stripped.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = stripped.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-        let value = value.strip_prefix('"').unwrap_or(value);
-        let value = value.strip_suffix('"').unwrap_or(value);
-        let value = value.to_string();
-        match key {
-            "host" => host = Some(value),
-            "token" => token = Some(value),
-            "machine_id" if !value.is_empty() => machine_id = Some(value),
-            _ => {}
-        }
-    }
-    let host = host.ok_or_else(|| anyhow::anyhow!("credentials: missing `host`"))?;
-    let token = token.ok_or_else(|| anyhow::anyhow!("credentials: missing `token`"))?;
-    if host.is_empty() {
+    let creds: BridgeCredentials =
+        toml::from_str(toml_text).map_err(|e| anyhow::anyhow!("credentials: invalid TOML: {e}"))?;
+    if creds.host.trim().is_empty() {
         anyhow::bail!("credentials: `host` is empty");
     }
-    if token.is_empty() {
+    if creds.token.trim().is_empty() {
         anyhow::bail!("credentials: `token` is empty");
     }
+    // Treat an empty machine_id line as if it weren't there — the
+    // bridge then re-derives one from `hostname`.
+    let machine_id = creds.machine_id.filter(|s| !s.trim().is_empty());
     Ok(BridgeCredentials {
-        host,
-        token,
+        host: creds.host,
+        token: creds.token,
         machine_id,
     })
 }
@@ -175,7 +152,21 @@ fn resolve_machine_id(persisted: Option<&str>) -> String {
 /// after the first hello when the server has echoed back the assigned
 /// value (which may be suffix-disambiguated vs. what we proposed).
 fn persist_machine_id(credentials_path: &PathBuf, machine_id: &str) -> anyhow::Result<()> {
-    let existing = std::fs::read_to_string(credentials_path).unwrap_or_default();
+    // Read existing content. Distinguish "file doesn't exist" (treat
+    // as empty — the bridge is being onboarded the first time) from
+    // "file exists but unreadable" (permissions, IO error) — in the
+    // latter case bail rather than silently clobber the host/token
+    // the user just pasted.
+    let existing = match std::fs::read_to_string(credentials_path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "could not read {} to persist machine_id: {err}",
+                credentials_path.display()
+            ));
+        }
+    };
     let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
     let new_line = format!("machine_id = \"{machine_id}\"");
     let mut updated = false;
