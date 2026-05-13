@@ -1,30 +1,19 @@
 //! Bridge bearer-token authentication.
 //!
-//! Three guarantees needed before the bridge protocol is safe past loopback:
+//! Token shapes (`(provider, machine_id)`):
+//!   - `("local",  None)`         → CLI bearer. CLI may act as its own
+//!                                   user only — `/internal/agent/{user_id}/*`.
+//!   - `("bridge", Some(m))`      → Legacy per-machine bridge. Restricted
+//!                                   to agents whose `agents.machine_id = m`.
+//!   - `("bridge", None)`         → User-scoped bridge. Allowed to act on
+//!                                   agents whose `agents.machine_id`
+//!                                   corresponds to an active (non-kicked)
+//!                                   `bridge_machines` row for this token,
+//!                                   OR to act as the user itself.
 //!
-//! 1. **Bearer token required on WS upgrade.** Anyone reaching
-//!    `/api/bridge/ws` with no `Authorization` header gets `401`.
-//! 2. **`machine_id` is pinned to a token.** The token row in
-//!    `api_tokens` carries the `machine_id` it's bound to; the bridge
-//!    can't claim an arbitrary id in `bridge.hello`. If the hello
-//!    payload's `machine_id` doesn't match, the connection is closed.
-//! 3. **`/internal/agent/<id>/*` is scoped to the token's `machine_id`.**
-//!    A valid token alone is not enough — the agent named in the URL
-//!    must be owned by the same `machine_id` the token is bound to.
-//!    Prevents one bridge's token from acting on another bridge's agents.
-//!
-//! Tokens live in `api_tokens` (with `machine_id` set; CLI tokens have
-//! `machine_id IS NULL` and are rejected here). Setup mints the initial
-//! local bridge token via `chorus::cli::login::mint_local_bridge_credentials`.
-//! Future tokens come from a `chorus tokens mint --bridge --machine-id`
-//! admin command (not yet implemented).
-//!
-//! Passthrough mode: when the `api_tokens` table contains **zero** rows
-//! with a non-null `machine_id`, the middleware passes every request
-//! through unauthenticated. This keeps test harnesses and pre-setup
-//! installs working without forcing every consumer to mint a bridge
-//! token. Once any bridge token exists in the DB the middleware switches
-//! to "all bridge requests require a valid token."
+//! Passthrough mode: when no bridge tokens exist at all (provider='bridge'),
+//! the middleware passes every request through unauthenticated. Once any
+//! bridge token exists, all `/internal/agent/*` requests need a valid bearer.
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -42,15 +31,20 @@ use crate::store::Store;
 pub enum AuthOutcome {
     /// No bridge tokens exist in the DB yet. Passes through.
     Disabled,
-    /// Bearer matched a bridge token; the bridge's hello (and any
-    /// `/internal/agent/{agent_id}/*` path) must reference an agent
-    /// whose `agents.machine_id` matches.
+    /// Bearer matched a legacy per-machine bridge token. The bridge's
+    /// hello and any `/internal/agent/{agent_id}/*` path must reference
+    /// an agent whose `agents.machine_id` matches `expected_machine_id`.
     Allowed { expected_machine_id: String },
     /// Bearer matched a CLI token. The CLI may only operate on the user
-    /// id the token represents — i.e. `/internal/agent/{actor_id}/*`
-    /// where `actor_id == users.id`. Agents are off-limits to CLI
-    /// tokens; those need bridges.
+    /// id the token represents.
     CliAllowed { user_id: String },
+    /// Bearer matched a user-scoped bridge token. May act on agents
+    /// whose `agents.machine_id` corresponds to an active (non-kicked)
+    /// `bridge_machines` row for this `token_hash`, or as the user itself.
+    UserBridgeAllowed {
+        user_id: String,
+        token_hash: String,
+    },
     /// Missing/malformed header, unknown token, or revoked.
     Rejected,
 }
@@ -99,11 +93,24 @@ pub fn check(store: &Store, headers: &HeaderMap) -> AuthOutcome {
     if row.revoked_at.is_some() {
         return AuthOutcome::Rejected;
     }
-    match row.machine_id {
-        Some(m) if !m.trim().is_empty() => AuthOutcome::Allowed {
-            expected_machine_id: m,
+    match (row.provider.as_str(), row.machine_id.as_deref()) {
+        ("bridge", Some(m)) if !m.trim().is_empty() => AuthOutcome::Allowed {
+            expected_machine_id: m.to_string(),
         },
-        _ => {
+        ("bridge", _) => {
+            // User-scoped bridge token: machine_id comes from each
+            // `bridge.hello` (for WS) or is derived from the agent row's
+            // `machine_id` cross-checked against `bridge_machines` (for
+            // HTTPS /internal/* calls).
+            match store.get_account_by_id(&row.account_id) {
+                Ok(Some(acct)) => AuthOutcome::UserBridgeAllowed {
+                    user_id: acct.user_id,
+                    token_hash,
+                },
+                _ => AuthOutcome::Rejected,
+            }
+        }
+        ("local", _) => {
             // CLI token. Resolve its user_id so the middleware can
             // enforce "this token can only act as its own user."
             match store.get_account_by_id(&row.account_id) {
@@ -113,6 +120,7 @@ pub fn check(store: &Store, headers: &HeaderMap) -> AuthOutcome {
                 _ => AuthOutcome::Rejected,
             }
         }
+        _ => AuthOutcome::Rejected,
     }
 }
 
@@ -212,6 +220,75 @@ pub async fn require_bridge_auth(
                         "bridge_auth: rejecting /internal request — no actor scope in path"
                     );
                     (StatusCode::FORBIDDEN, "no actor scope in path").into_response()
+                }
+            }
+        }
+        AuthOutcome::UserBridgeAllowed {
+            user_id,
+            token_hash,
+        } => {
+            // User-scoped bridge token. Allowed paths:
+            //   1. /internal/agent/{user_id}/* — acting as the user itself.
+            //   2. /internal/agent/{agent_id}/* — where the agent's
+            //      machine_id has a non-kicked bridge_machines row tied
+            //      to this token.
+            let path = req.uri().path().to_string();
+            let actor = match agent_id_from_internal_path(&path) {
+                Some(a) => a.to_string(),
+                None => {
+                    warn!(
+                        path = %path,
+                        "bridge_auth: rejecting /internal request — no actor scope in path"
+                    );
+                    return (StatusCode::FORBIDDEN, "no actor scope in path").into_response();
+                }
+            };
+            if actor == user_id {
+                return next.run(req).await;
+            }
+            // Look up the agent row to find its machine_id, then
+            // cross-check with bridge_machines.
+            let agent_machine_id = match state.store.get_agent_by_id(&actor, false) {
+                Ok(Some(agent)) => agent.machine_id,
+                Ok(None) => {
+                    warn!(
+                        path = %path,
+                        token_user_id = %user_id,
+                        "bridge_auth: rejecting /internal request — agent_id not in store"
+                    );
+                    return (StatusCode::FORBIDDEN, "agent not found").into_response();
+                }
+                Err(err) => {
+                    warn!(
+                        path = %path,
+                        error = %err,
+                        "bridge_auth: rejecting /internal request — agent store error"
+                    );
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response();
+                }
+            };
+            match state.store.get_bridge_machine(&token_hash, &agent_machine_id) {
+                Ok(Some(m)) if !m.is_kicked() => next.run(req).await,
+                Ok(_) => {
+                    warn!(
+                        path = %path,
+                        token_user_id = %user_id,
+                        agent_machine_id = %agent_machine_id,
+                        "bridge_auth: rejecting /internal request — agent's machine not registered (or kicked) for this user-scoped token"
+                    );
+                    (
+                        StatusCode::FORBIDDEN,
+                        "user-scoped bridge token not authorized for this agent's machine",
+                    )
+                        .into_response()
+                }
+                Err(err) => {
+                    warn!(
+                        path = %path,
+                        error = %err,
+                        "bridge_auth: rejecting /internal request — bridge_machines lookup failed"
+                    );
+                    (StatusCode::INTERNAL_SERVER_ERROR, "store error").into_response()
                 }
             }
         }

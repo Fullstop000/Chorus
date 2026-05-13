@@ -10,11 +10,13 @@
 
 pub mod accounts;
 pub mod api_tokens;
+pub mod bridge_machines;
 pub mod sessions;
 pub mod users;
 
 pub use accounts::Account;
 pub use api_tokens::{ApiToken, MintedToken};
+pub use bridge_machines::{BridgeMachine, HelloOutcome};
 pub use sessions::Session;
 pub use users::User;
 

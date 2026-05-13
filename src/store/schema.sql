@@ -178,18 +178,19 @@ CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
 
 -- CLI / bridge bearer tokens.
 --
--- `machine_id` distinguishes a bridge token from a CLI token:
---   NULL    → CLI token. Acts as the User in all `/api/*` calls.
---   SET     → bridge token bound to that machine. The auth layer (in
---             bridge_auth.rs) restricts the bearer to operating on
---             agents whose `agents.machine_id` matches this value.
---
--- One shape, two semantics — the label string carries the human-readable
--- distinction ("Local CLI" / "Local bridge" / "Laptop bridge" / "CI").
+-- `provider` discriminates token type. Three valid shapes:
+--   ('local',  NULL)   → CLI bearer. Acts as the User in `/api/*` calls.
+--   ('bridge', SET)    → Legacy per-machine bridge token. Restricted to
+--                        agents whose `agents.machine_id` matches.
+--   ('bridge', NULL)   → User-scoped bridge token (one per user, shared
+--                        across that user's machines). The machine_id
+--                        comes from each `bridge.hello` frame; see
+--                        `bridge_machines` for live registry.
 CREATE TABLE IF NOT EXISTS api_tokens (
     token_hash      TEXT PRIMARY KEY,                   -- SHA-256(raw_token); raw never stored
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    machine_id      TEXT,                               -- NULL = CLI; set = bridge
+    provider        TEXT NOT NULL CHECK (provider IN ('local','bridge')),
+    machine_id      TEXT,
     label           TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at    TEXT,
@@ -197,6 +198,22 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_account_id ON api_tokens(account_id);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_machine_id ON api_tokens(machine_id);
+
+-- Live + historical registry of bridge connections per user-scoped token.
+-- One row per (token, machine) pair. State columns disambiguate
+-- "not currently connected" from "operator kicked".
+CREATE TABLE IF NOT EXISTS bridge_machines (
+    token_hash       TEXT NOT NULL REFERENCES api_tokens(token_hash) ON DELETE CASCADE,
+    machine_id       TEXT NOT NULL,
+    hostname_hint    TEXT,                              -- what the bridge self-reported on first hello
+    first_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    disconnected_at  TEXT,                              -- NULL = live WS; set = no live WS
+    kicked_at        TEXT,                              -- set = operator clicked Kick; reconnect rejected
+    PRIMARY KEY (token_hash, machine_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bridge_machines_active
+    ON bridge_machines(token_hash) WHERE disconnected_at IS NULL;
 
 -- Tasks tracked within channels.
 CREATE TABLE IF NOT EXISTS tasks (

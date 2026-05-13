@@ -66,50 +66,77 @@ fn agent_to_target(a: Agent) -> AgentTarget {
     }
 }
 
+/// What kind of authentication context the WS upgrade carried. Drives
+/// the post-hello dispatch in `bridge_session`.
+enum BridgeAuthContext {
+    /// No bridge tokens exist in the DB yet — passthrough.
+    Passthrough,
+    /// Legacy per-machine bridge token. `hello.machine_id` must equal
+    /// the token's bound machine_id.
+    PerMachine { expected_machine_id: String },
+    /// User-scoped bridge token. The hello's machine_id is authoritative
+    /// and is recorded in `bridge_machines`.
+    UserScoped { token_hash: String },
+}
+
 pub async fn handle_bridge_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let expected_machine_id =
-        match crate::server::bridge_auth::check(state.store.as_ref(), &headers) {
-            AuthOutcome::Disabled => None,
-            AuthOutcome::Allowed {
-                expected_machine_id,
-            } => Some(expected_machine_id),
-            AuthOutcome::CliAllowed { .. } => {
-                // CLI tokens are not allowed to open a bridge WS session
-                // — they're for `chorus send` and friends, not for
-                // bridges hosting agents.
-                warn!("bridge_ws: rejecting upgrade — CLI token cannot open bridge session");
-                return (
-                    StatusCode::FORBIDDEN,
-                    "CLI token not allowed on bridge upgrade",
-                )
-                    .into_response();
-            }
-            AuthOutcome::Rejected => {
-                warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
-                return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token")
-                    .into_response();
-            }
-        };
+    let auth_ctx = match crate::server::bridge_auth::check(state.store.as_ref(), &headers) {
+        AuthOutcome::Disabled => BridgeAuthContext::Passthrough,
+        AuthOutcome::Allowed {
+            expected_machine_id,
+        } => BridgeAuthContext::PerMachine {
+            expected_machine_id,
+        },
+        AuthOutcome::UserBridgeAllowed { token_hash, .. } => {
+            BridgeAuthContext::UserScoped { token_hash }
+        }
+        AuthOutcome::CliAllowed { .. } => {
+            warn!("bridge_ws: rejecting upgrade — CLI token cannot open bridge session");
+            return (
+                StatusCode::FORBIDDEN,
+                "CLI token not allowed on bridge upgrade",
+            )
+                .into_response();
+        }
+        AuthOutcome::Rejected => {
+            warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
+            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response();
+        }
+    };
     ws.on_upgrade(move |socket| {
         bridge_session(
             socket,
             state.store.clone(),
             state.bridge_registry.clone(),
-            expected_machine_id,
+            auth_ctx,
         )
     })
     .into_response()
+}
+
+/// WebSocket close codes specific to this PRD. Extends the catalog in
+/// `docs/plan/bridge-platform-protocol.md` §4.
+const CLOSE_CODE_KICKED: u16 = 4004;
+
+async fn close_with(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    use axum::extract::ws::CloseFrame;
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        })))
+        .await;
 }
 
 async fn bridge_session(
     mut socket: WebSocket,
     store: Arc<Store>,
     registry: Arc<BridgeRegistry>,
-    expected_machine_id: Option<String>,
+    auth_ctx: BridgeAuthContext,
 ) {
     let hello = match recv_hello(&mut socket).await {
         Ok(h) => h,
@@ -119,25 +146,66 @@ async fn bridge_session(
         }
     };
 
-    // Auth pin: when the upgrade carried a known token, the bridge must
-    // declare the `machine_id` that token is bound to. Anything else is
-    // a spoof attempt — close without sending a target.
-    if let Some(ref expected) = expected_machine_id {
-        if hello.machine_id != *expected {
-            warn!(
-                token_bound_machine_id = %expected,
-                claimed_machine_id = %hello.machine_id,
-                "bridge_ws: dropping connection — bridge.hello.machine_id does not match token binding"
-            );
-            return;
+    // Auth dispatch by token shape.
+    let user_scoped_token_hash: Option<String> = match &auth_ctx {
+        BridgeAuthContext::Passthrough => None,
+        BridgeAuthContext::PerMachine {
+            expected_machine_id,
+        } => {
+            if hello.machine_id != *expected_machine_id {
+                warn!(
+                    token_bound_machine_id = %expected_machine_id,
+                    claimed_machine_id = %hello.machine_id,
+                    "bridge_ws: dropping connection — bridge.hello.machine_id does not match token binding"
+                );
+                return;
+            }
+            None
         }
-    }
+        BridgeAuthContext::UserScoped { token_hash } => {
+            // Apply the bridge_machines state machine. The frame's
+            // machine_id is authoritative; we record it.
+            match store.register_bridge_machine_hello(
+                token_hash,
+                &hello.machine_id,
+                Some(&hello.machine_id),
+            ) {
+                Ok((_, outcome)) => match outcome {
+                    crate::store::auth::HelloOutcome::Rejected => {
+                        warn!(
+                            machine_id = %hello.machine_id,
+                            "bridge_ws: rejecting hello — bridge_machines row is kicked"
+                        );
+                        close_with(
+                            &mut socket,
+                            CLOSE_CODE_KICKED,
+                            "device kicked from Settings → Devices",
+                        )
+                        .await;
+                        return;
+                    }
+                    other => {
+                        debug!(
+                            machine_id = %hello.machine_id,
+                            outcome = ?other,
+                            "bridge_ws: user-scoped bridge hello accepted"
+                        );
+                    }
+                },
+                Err(err) => {
+                    warn!(error = %err, "bridge_ws: bridge_machines register failed");
+                    return;
+                }
+            }
+            Some(token_hash.clone())
+        }
+    };
 
     info!(
         machine_id = %hello.machine_id,
         bridge_version = %hello.bridge_version,
         agents_alive = hello.agents_alive.len(),
-        auth = expected_machine_id.is_some(),
+        user_scoped = user_scoped_token_hash.is_some(),
         "bridge_ws: bridge connected"
     );
 
@@ -207,6 +275,18 @@ async fn bridge_session(
                     }
                 }
             }
+        }
+    }
+
+    // For user-scoped bridge tokens, stamp `disconnected_at` so Settings
+    // → Devices reflects the offline state immediately. Idempotent.
+    if let Some(ref token_hash) = user_scoped_token_hash {
+        if let Err(err) = store.mark_bridge_machine_disconnected(token_hash, &machine_id) {
+            warn!(
+                machine_id = %machine_id,
+                error = %err,
+                "bridge_ws: failed to mark bridge_machines disconnected"
+            );
         }
     }
 }
