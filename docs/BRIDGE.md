@@ -31,8 +31,8 @@ right shape is load-bearing — sending the wrong keys produces confusing
 | Kimi (ACP inline) | `{"type": "http", "name": "chat", "url": "…", "headers": []}` in `session/new` params |
 | OpenCode | `{"type": "remote", "url": "…"}` in `mcp.chat` |
 
-See `docs/DRIVER_GUIDE.md` for the full driver-author contract and
-pairing-token flow.
+See `docs/DRIVERS.md` for the driver-author contract and pairing-token
+flow.
 
 ---
 
