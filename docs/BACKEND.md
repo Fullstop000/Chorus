@@ -203,7 +203,7 @@ Use the `tracing` crate. **Never `eprintln!` / `println!` in library code.**
 
 Standard dev invocation:
 ```bash
-RUST_LOG=chorus=info ./target/debug/chorus serve --port 3001
+RUST_LOG=chorus=info ./target/debug/chorus-server --port 3001
 ```
 
 Prefer structured fields over string interpolation:
@@ -223,7 +223,6 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | `tests/e2e_tests.rs` | HTTP + WebSocket end-to-end | Router or event stream changes |
 | `tests/realtime_tests.rs` | WebSocket / StreamEvent | Realtime transport changes |
 | `tests/server_tests.rs` | HTTP handlers (test router) | Handler logic changes |
-| `tests/driver_tests.rs` | Agent runtime drivers | New driver or driver fix |
 | `tests/check_impl.rs` | Type-level / trait checks | Generic constraints |
 | `tests/bridge_serve_tests.rs` | Shared bridge HTTP + per-agent isolation | Bridge serve or `Backend` trait changes |
 | `#[cfg(test)]` modules | Pure function unit tests | Module-local utilities |
@@ -260,7 +259,7 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | **Agent drivers** | `src/agent/drivers/` | ACP trait + raw implementations |
 | **Driver selection** | `src/agent/drivers/mod.rs` | `driver_for_runtime()` |
 | **Agent lifecycle** | `src/agent/manager.rs` | Spawn, session, event dispatch |
-| **MCP bridge (shared)** | `src/bridge/serve.rs` | `chorus bridge-serve` HTTP daemon |
+| **MCP bridge (shared)** | `src/bridge/serve.rs` | In-process MCP HTTP daemon started by `chorus-server` |
 | **MCP bridge (backend)** | `src/bridge/backend.rs` | `Backend` trait + `ChorusBackend` impl |
 | **Bridge discovery** | `src/bridge/discovery.rs` | `read_bridge_info()` — PID-validated `~/.chorus/bridge.json` |
 
@@ -301,13 +300,16 @@ See `docs/DRIVERS.md` for the full guide. Key principle: capture a wire trace fr
 
 ---
 
-## Phase 3 Architecture: Bridge ↔ Platform Split
+## Bridge ↔ Platform Architecture
 
-Chorus runs as one process by default (`chorus serve`). For cross-machine
-deployment it splits into two:
+Chorus runs as one process by default (`chorus-server`). For cross-machine
+deployment it splits into two. The wire protocol (frame contract,
+reconcile invariants, auth model) is specified in
+`docs/plan/bridge-platform-protocol.md`; this section covers only what a
+Rust contributor needs to navigate the code:
 
 ```
-┌── Platform (chorus serve) ────────┐         ┌── Bridge (chorus bridge) ─┐
+┌── Server (chorus-server) ─────────┐         ┌── Bridge (chorus bridge) ─┐
 │  - HTTP API + WS realtime         │  WS     │  - Embedded MCP HTTP      │
 │  - SQLite (canonical store)       │ ◀────▶  │  - AgentManager           │
 │  - BridgeRegistry                 │ /api/   │  - Local SQLite (synced   │
@@ -339,21 +341,7 @@ deployment it splits into two:
   not stream traces upstream — that's an open r5 decision (see
   `docs/plan/bridge-platform-protocol.md` § open decisions).
 
-### Wire protocol (B = Bridge, P = Platform)
-
-| Frame | Direction | Trigger |
-| --- | --- | --- |
-| `bridge.hello` | B → P | First frame after WS upgrade. Carries `machine_id`, `bridge_version`, `agents_alive[]`. |
-| `bridge.target` | P → B | Reply to hello, plus push on every agent CRUD on the platform. Carries the desired runtime config for every agent owned by this `machine_id`. |
-| `agent.state` | B → P | Bridge runtime transitioned (started / active / stopped / crashed). Carries a monotonic `runtime_pid` so the platform can drop frames from a previous instance after a stop→start race. |
-| `chat.message.received` | P → B | A message arrived for an agent owned by this bridge. Carries `agent_id`, `channel_id`, `seq`, and the message envelope. |
-| `chat.ack` | B → P | Bridge confirmed the chat was queued for the local agent. Advances the per-agent ack cursor in `BridgeRegistry`. |
-
-All frames share the envelope `{v: 1, type: "<frame-type>", data: {...}}`.
-The platform speaks the contract from `src/server/transport/bridge_ws.rs`;
-the bridge speaks it from `src/bridge/client/ws.rs`.
-
-### Module map (Phase 3)
+### Module map
 
 ```
 src/server/
@@ -373,37 +361,14 @@ src/bridge/client/          (the bridge half of the protocol)
 src/cli/bridge.rs           clap subcommand wiring for `chorus bridge`
 ```
 
-### Auth model
-
-| Path | Auth | Rationale |
-| --- | --- | --- |
-| `GET /api/bridge/ws` | Bearer token mapped to a fixed `machine_id` via `CHORUS_BRIDGE_TOKENS` | Without auth, any client could pretend to be a known bridge and intercept its target/chat frames. |
-| `/internal/agent/*` | Bearer (when `CHORUS_BRIDGE_TOKENS` is set) | These are the historical loopback endpoints the in-process MCP bridge uses; Phase 3 promotes them to bearer-gated. |
-| Platform REST API (`/api/*`) | None (today) | Pre-existing across all of Chorus. Bridge MCP-proxied tool-calls flow through here unauthenticated. Owning a token already gets you a connected bridge that can do the same; tightening the REST surface is a follow-up. |
-
-### Reconcile invariants
-
-- `bridge.target` is the single source of truth. The bridge does NOT
-  derive intent from chat events alone; new agents only spawn after
-  they appear in a target frame.
-- `runtime_pid` is a per-bridge monotonic counter, not an OS pid. Real
-  pids would race with reconnects; the counter increments on every
-  `start_agent` call for the same name.
-- `instance_pids` cleared on overlapping bridge reconnect. If a new WS
-  registers while the old TCP is half-open, the old's deregister no
-  longer ran "last"; we clear pids in `register` so the fresh bridge's
-  pid=1 isn't dropped as stale.
-- `chat.message.received` arriving before `bridge.target` populates
-  the id_map is buffered per platform_agent_id (cap 32) and replayed
-  on the next target reconcile that knows the agent.
-
 ### What still single-process
 
-`chorus serve` with no bridges connected behaves identically to pre-Phase-3
-Chorus: `agents.machine_id` is NULL, every lifecycle gate falls through,
-and the in-process MCP bridge handles tool-calls. The split kicks in only
-when an agent is created (or updated) with a non-null `machineId` and a
-remote `chorus bridge` is running for that id.
+`chorus-server` with no bridges connected behaves identically to
+single-process Chorus: `agents.machine_id` is NULL, every lifecycle
+gate falls through, and the in-process MCP bridge handles tool-calls.
+The split kicks in only when an agent is created (or updated) with a
+non-null `machineId` and a remote `chorus bridge` is running for that
+id.
 
 ---
 
@@ -414,5 +379,5 @@ remote `chorus bridge` is running for that id.
 - `docs/ACP.md` — ACP driver SOP and debugging
 - `docs/DRIVERS.md` — Adding new agent runtimes
 - `docs/INBOX.md` — Unread and read cursor mechanics
-- `docs/BRIDGE_MIGRATION.md` — Shared MCP bridge architecture, `bridge-serve`, driver conversion guide
-- `docs/plan/bridge-platform-protocol.md` — Phase 3 bridge ↔ platform wire protocol (r5)
+- `docs/BRIDGE.md` — Shared MCP bridge architecture, per-runtime MCP config, troubleshooting
+- `docs/plan/bridge-platform-protocol.md` — bridge ↔ platform wire protocol (frames, auth, reconcile invariants)

@@ -330,8 +330,8 @@ fn render_onboarding_script(host: &str, bearer: &str) -> String {
 set -euo pipefail
 
 if ! command -v chorus >/dev/null 2>&1; then
-  echo 'Install Chorus first:'
-  echo '  cargo install --git https://github.com/Fullstop000/Chorus chorus'
+  echo 'Install the Chorus CLI first:'
+  echo '  cargo install --git https://github.com/Fullstop000/Chorus --bin chorus'
   exit 1
 fi
 

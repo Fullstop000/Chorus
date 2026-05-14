@@ -168,7 +168,7 @@ impl Session for MyHandle {
 ```bash
 cargo build
 
-nohup ./target/debug/chorus serve --port 3102 --data-dir /tmp/chorus-test-3102 \
+nohup ./target/debug/chorus-server --port 3102 --data-dir /tmp/chorus-test-3102 \
   > /tmp/chorus-3102.log 2>&1 &
 
 cd qa/cases/playwright
@@ -222,7 +222,7 @@ ACP has four distinct phases. Failures in each phase look different.
 **How to identify the phase:**
 
 ```bash
-RUST_LOG=chorus=debug ./target/debug/chorus serve --port 3102 --data-dir /tmp/dbg
+RUST_LOG=chorus=debug ./target/debug/chorus-server --port 3102 --data-dir /tmp/dbg
 # Tail: grep for the phase keywords
 tail -f /tmp/chorus-3102.log | grep -E "initialize|session/new|session/prompt|request_permission|TurnEnd|PermissionRequested"
 ```

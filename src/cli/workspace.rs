@@ -4,10 +4,10 @@ use anyhow::Context;
 use clap::Subcommand;
 use serde::Deserialize;
 
-use chorus::utils::http;
+use crate::utils::http;
 
 #[derive(Subcommand)]
-pub(crate) enum WorkspaceCommands {
+pub enum WorkspaceCommands {
     /// Print the active workspace
     Current,
     /// List workspaces

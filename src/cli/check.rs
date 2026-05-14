@@ -3,10 +3,10 @@
 //! Reports runtime installation/auth status, data-directory health, and shared
 //! MCP bridge reachability without mutating the environment.
 
-use chorus::agent::drivers::ProbeAuth;
-use chorus::agent::manager::build_driver_registry;
-use chorus::bridge::discovery::{read_bridge_status, BridgeStatus};
-use chorus::config::ChorusConfig;
+use crate::agent::drivers::ProbeAuth;
+use crate::agent::manager::build_driver_registry;
+use crate::bridge::discovery::{read_bridge_status, BridgeStatus};
+use crate::config::ChorusConfig;
 use console::{style, Emoji};
 use std::path::Path;
 

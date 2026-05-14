@@ -228,7 +228,7 @@ fn atomic_write_0600(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
-    use chorus::bridge::client;
+    use crate::bridge::client;
 
     let data_dir = PathBuf::from(&data_dir_str);
     let data_subdir = data_dir.join("data");
@@ -264,7 +264,7 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
     let (platform_http, platform_ws) = derive_urls(&creds.host);
 
     let db_path = data_subdir.join("chorus-bridge.db");
-    let store = Arc::new(chorus::store::Store::open_for_bridge(
+    let store = Arc::new(crate::store::Store::open_for_bridge(
         db_path.to_str().unwrap(),
     )?);
 
@@ -278,23 +278,14 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
         store,
     };
 
-    // Out-of-process bridge: a terminal auth error (401 on upgrade,
-    // 4004 kicked, 4005 token_revoked) is a user-actionable signal,
-    // not a transient failure. Print the message and exit 2 so process
-    // supervisors stop restarting and a human notices. Any other error
-    // bubbles up to clap, which exits 1.
-    match client::run_bridge_client(cfg).await {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if let Some(terminal) =
-                err.downcast_ref::<chorus::bridge::client::BridgeTerminalError>()
-            {
-                eprintln!("\n{terminal}\n");
-                std::process::exit(2);
-            }
-            Err(err)
-        }
-    }
+    // A terminal auth error (401 on upgrade, 4004 kicked, 4005
+    // token_revoked) is a user-actionable signal, not a transient
+    // failure. We surface it as a typed `BridgeTerminalError` so the
+    // caller — the `chorus` bin — can print + `exit(2)` to stop the
+    // process supervisor from restarting. Exiting here would skip
+    // dropping the bin's tracing `WorkerGuard` and lose queued log
+    // writes; the bin handles the exit instead.
+    client::run_bridge_client(cfg).await
 }
 
 #[cfg(test)]

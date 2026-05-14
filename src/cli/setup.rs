@@ -5,9 +5,9 @@
 //! lets the user pick between duplicate binaries on `$PATH`). Passes `--yes`
 //! to skip all prompts and accept defaults.
 
-use chorus::agent::drivers::ProbeAuth;
-use chorus::config::ChorusConfig;
-use chorus::store::{Store, Workspace};
+use crate::agent::drivers::ProbeAuth;
+use crate::config::ChorusConfig;
+use crate::store::{Store, Workspace};
 use console::{style, Emoji};
 use std::io::IsTerminal;
 use std::path::Path;
@@ -564,7 +564,7 @@ pub async fn run(
 
     // Resolve the data dir early so we can check for an existing config.
     let data_dir_str_early = data_dir.clone().unwrap_or_else(default_data_dir);
-    let data_dir_early = chorus::agent::templates::expand_tilde(&data_dir_str_early);
+    let data_dir_early = crate::agent::templates::expand_tilde(&data_dir_str_early);
     let config_path = data_dir_early.join("config.toml");
 
     // Skip setup only when the existing install already has an active local
@@ -603,7 +603,7 @@ pub async fn run(
         }
         None => default_data_dir(),
     };
-    let data_dir = chorus::agent::templates::expand_tilde(&data_dir_str);
+    let data_dir = crate::agent::templates::expand_tilde(&data_dir_str);
 
     // Template dir precedence: CLI flag > existing config > default.
     // Setup always writes the result back so `chorus start` picks it up later.
@@ -615,7 +615,7 @@ pub async fn run(
                 .and_then(|c| c.agent_template.dir)
         })
         .unwrap_or_else(|| DEFAULT_TEMPLATE_DIR.to_string());
-    let template_dir = chorus::agent::templates::expand_tilde(&template_dir_raw);
+    let template_dir = crate::agent::templates::expand_tilde(&template_dir_raw);
 
     row_info("Data dir", &style(data_dir.display()).cyan().to_string());
     row_info(
@@ -875,7 +875,7 @@ mod tests {
             workspace.created_by_human_id.as_deref(),
             Some(alice.id.as_str())
         );
-        assert_eq!(workspace.mode, chorus::store::WorkspaceMode::LocalOnly);
+        assert_eq!(workspace.mode, crate::store::WorkspaceMode::LocalOnly);
         assert_eq!(
             store.get_active_workspace().unwrap().unwrap().id,
             workspace.id

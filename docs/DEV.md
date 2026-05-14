@@ -27,7 +27,7 @@ React frontend. Run both in parallel.
 **Backend** (terminal 1):
 
 ```bash
-RUST_LOG=chorus=info cargo run -- serve --port 3001
+RUST_LOG=chorus=info cargo run --bin chorus-server -- --port 3001
 ```
 
 Output ends with `Chorus running at http://localhost:3001`. The server:
@@ -36,11 +36,12 @@ Output ends with `Chorus running at http://localhost:3001`. The server:
 - Serves the HTTP API at `:3001/api/*`
 - Opens a WebSocket at `:3001/internal/*` for the realtime event stream
 - Auto-restores previously-active agents on startup — if you killed
-  `chorus serve` while agents were running, they come back on the next
+  `chorus-server` while agents were running, they come back on the next
   boot without manual intervention
 
 Override the port with `--port <N>`. Override the template directory with
-`--template-dir <PATH>` or `CHORUS_TEMPLATE_DIR=<PATH>`.
+`--template-dir <PATH>` or `CHORUS_TEMPLATE_DIR=<PATH>`. Pass `--log-dir
+<PATH>` to redirect logs away from `<data_dir>/logs`.
 
 **Frontend** (terminal 2):
 
@@ -61,88 +62,41 @@ See `ui/vite.config.ts` for the proxy configuration.
 
 **Shared MCP bridge:**
 
-`chorus serve` starts the shared bridge in-process automatically (default port 4321,
-configurable via `--bridge-port`). You don't need to run anything extra. If you want
-to run the bridge standalone:
+`chorus-server` starts the shared bridge in-process automatically (default port 4321,
+configurable via `--bridge-port`). You don't need to run anything extra.
 
-```bash
-chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
-```
-
-```bash
-# Verify the bridge layer works (no Chorus server required)
-chorus bridge-smoke-test
-```
-
-See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
+See `docs/BRIDGE.md` for the full architecture and driver implementation
 guide.
 
-### Two-process mode (Phase 3 bridge ↔ platform split)
+### Cross-machine mode (server + bridge)
 
 For cross-machine deployment, Chorus runs as two separate processes:
 
-- **Platform** (`chorus serve`) — HTTP API, WebSocket realtime, SQLite, no
-  agent runtimes spawned locally.
-- **Bridge** (`chorus bridge`) — connects to a remote platform via
-  `GET /api/bridge/ws`, hosts the agent runtime processes, proxies their
-  MCP tool-calls back to the platform's HTTP API.
+- **Server** (`chorus-server`) — HTTP API, WebSocket realtime, SQLite,
+  no agent runtimes spawned locally.
+- **Bridge** (`chorus bridge`) — connects to a remote server via
+  `GET /api/bridge/ws`, hosts the agent runtime processes, proxies
+  their MCP tool-calls back to the server's HTTP API.
 
-Run them in two terminals (or two machines):
+Mint a bridge token from the server's Settings → Devices first, paste
+the one-liner it generates. The bridge reads host + token from
+`$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml`; the WS upgrade
+is bearer-protected, no env-var wiring required.
 
-```bash
-# Platform — terminal 1
-chorus serve --port 4101 --data-dir /tmp/chorus-platform
-
-# Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds)
-chorus bridge \
-  --platform-ws ws://127.0.0.1:4101/api/bridge/ws \
-  --platform-http http://127.0.0.1:4101 \
-  --machine-id m-1 \
-  --data-dir /tmp/chorus-bridge \
-  --bridge-listen 127.0.0.1:5455
-```
-
-Create an agent and bind it to the bridge by setting `machineId`:
-
-```bash
-curl -X POST http://127.0.0.1:4101/api/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"alice","display_name":"Alice","runtime":"claude","model":"sonnet","machineId":"m-1"}'
-```
-
-The platform pushes a `bridge.target` frame to the bridge; the bridge spawns
-the runtime locally and starts streaming `agent.state` upstream. Sending a
-chat to `@alice` reaches the bridge over WS, the bridge wakes the runtime,
-and the agent's `mcp__chat__send_message` reply lands back on the platform.
-
-For production deployments, secure the WS upgrade with bearer tokens:
-
-```bash
-# On the platform process:
-export CHORUS_BRIDGE_TOKENS="secret-for-m1:m-1,secret-for-m2:m-2"
-chorus serve --port 4101
-
-# On each bridge:
-export CHORUS_BRIDGE_TOKEN=secret-for-m1
-chorus bridge --platform-ws wss://platform.example/api/bridge/ws ...
-```
-
-`tokio-tungstenite` is built with the `rustls-tls-webpki-roots` feature
-so `wss://` works out of the box. See `docs/plan/bridge-platform-protocol.md`
-for the full wire contract and `docs/BACKEND.md` § Phase 3 architecture for
-the platform/bridge ownership split.
+See `docs/plan/bridge-platform-protocol.md` for the wire contract and
+`docs/BACKEND.md` § Phase 3 architecture for the server/bridge
+ownership split.
 
 ### CLI commands
 
 See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
 
 ```bash
-chorus setup                    # first-run initializer
-chorus check                    # read-only environment diagnostic
-chorus start --port 3001        # start server + open browser
-chorus serve --port 3001        # start server, no browser
-chorus bridge ...               # remote runtime, connects to a platform via WS
-chorus bridge-serve ...         # standalone MCP bridge (in-process by default)
+chorus setup                              # first-run initializer (local CLI)
+chorus check                              # read-only environment diagnostic
+chorus-server --port 3001                 # run the server (HTTP API + embedded UI)
+chorus bridge                             # remote agent runtime (reads bridge-credentials.toml)
+chorus agent create my-agent              # admin action — hits the running server's HTTP API
 ```
 
 ---
@@ -172,10 +126,10 @@ cd ui && npx tsc --noEmit       # typecheck only (no test run)
 cd ui && npm run build           # production build (tsc + vite build)
 ```
 
-Vitest covers ~48 tests across hooks, inbox, sidebar filters, and pure
-function helpers. There is currently **no React component testing
-infrastructure** (no testing-library, no jsdom) — component rendering is
-verified via `/gstack-qa` browser QA, not unit tests.
+Vitest covers hooks, inbox, sidebar filters, and pure function helpers.
+There is currently **no React component testing infrastructure** (no
+testing-library, no jsdom) — component rendering is verified via
+`/gstack-qa` browser QA, not unit tests.
 
 ### Browser QA
 
@@ -192,10 +146,10 @@ fix bugs it finds. The case catalog and templates still live under
 
 ## Killing and restarting the server
 
-`chorus serve` auto-restores previously-active agents on startup. This
+`chorus-server` auto-restores previously-active agents on startup. This
 means:
 
-- **Safe to kill during QA or rebuild.** `pkill -f 'chorus serve'`, rebuild,
+- **Safe to kill during QA or rebuild.** `pkill -f 'chorus-server'`, rebuild,
   restart — the agents come back automatically.
 - **Agent state survives.** Agents are stored in SQLite; the running
   processes are just bridges. Restarting the server re-spawns the bridges
@@ -209,18 +163,8 @@ means:
 
 ## Branch and commit workflow
 
-### Branches
-
-1. Check the worktree is clean before switching branches.
-2. If local changes exist, commit, stash, or move them before switching.
-3. Start from an up-to-date `main` based on `origin/main`.
-4. Create branches with an `{agent}/` prefix: `claude/`, `codex/`, `kimi/`,
-   `opencode/`, etc. Use your agent name.
-5. Don't carry unrelated changes into a new branch.
-
-### Commits
-
-Conventional commits with a scope:
+Start from clean `main`. Don't carry unrelated changes into a new
+branch. Use conventional commits with a scope:
 
 - `feat(templates):` — new feature
 - `fix(store):` — bug fix
@@ -231,40 +175,17 @@ Conventional commits with a scope:
 - `chore:` — tooling, config, dependencies
 - `ci:` — CI/CD configuration
 
-Each commit should be **one logical change** that's independently valid.
+Each commit is one logical change that's independently valid.
 Bisectable commits are the goal: if a bug is introduced, `git bisect`
 should land on exactly the commit that caused it.
 
 ---
 
-## Verification policy
-
-Do not claim complete without matching verification.
-
-**Minimum:**
-
-1. Run focused Rust tests for affected modules
-2. Run `cargo test --test e2e_tests` when backend message / task / DM /
-   thread / agent flow is affected
-3. For user-facing changes, run `/gstack-qa` (authoritative browser QA)
-
-**Escalation:**
-
-- Backend or data-path changes: Rust tests first, then e2e
-- Core user process changes: `/gstack-qa` mandatory — backend tests alone
-  are not sufficient
-- Core paths: channel messaging, DM flows, thread replies, task board,
-  agent loops
-- If `/gstack-qa` cannot run (no dev server, external blocker), state it
-  clearly; don't claim "fully verified"
-
----
-
 ## Troubleshooting
 
-### "Port already in use" on `cargo run -- serve --port 3001`
+### "Port already in use" on `cargo run --bin chorus-server -- --port 3001`
 
-Another `chorus serve` is running. `pkill -f 'chorus serve'` then retry.
+Another `chorus-server` is running. `pkill -f 'chorus-server'` then retry.
 
 ### Vite proxy 502 / 504
 
@@ -275,7 +196,7 @@ The backend isn't running or is on a different port. Check with
 ### SQLite schema out of sync after editing `schema.sql`
 
 Views are rebuilt on every startup (`DROP VIEW IF EXISTS ... CREATE VIEW`).
-Restart `chorus serve` and the new view definition takes effect. Tables
+Restart `chorus-server` and the new view definition takes effect. Tables
 are additive via `CREATE TABLE IF NOT EXISTS`, so column additions need a
 real migration in `src/store/migrations.rs`.
 

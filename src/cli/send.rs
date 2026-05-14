@@ -8,7 +8,7 @@
 use anyhow::Context;
 
 pub async fn run(target: String, content: String, server_url: String) -> anyhow::Result<()> {
-    let client = chorus::utils::http::client();
+    let client = crate::utils::http::client();
     let (me, token) = crate::cli::fetch_authed_user_with_token(&client, &server_url).await?;
 
     // The historical `/internal/agent/{actor_id}/send` route is keyed on

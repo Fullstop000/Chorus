@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
+name = "chorus-server"
+path = "src/bin/chorus-server.rs"
+
+[[bin]]
 name = "chorus"
-path = "src/main.rs"
+path = "src/bin/chorus.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

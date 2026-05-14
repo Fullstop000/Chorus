@@ -38,7 +38,24 @@ pub const AGENT_SPAN_NAME: &str = "agent";
 
 /// Initialize tracing. Returns a `WorkerGuard` that must live for the
 /// process lifetime so queued file writes flush cleanly on exit.
+///
+/// File-logging is enabled when `data_dir` is provided; logs are written
+/// to `<data_dir>/logs`. To redirect the logs root somewhere else (e.g.
+/// `chorus-server --log-dir /var/log/chorus`), use
+/// [`init_tracing_with_logs_dir`] instead.
 pub fn init_tracing(data_dir: Option<&str>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let logs_dir_override = data_dir.map(|d| expand_tilde(d).join("logs"));
+    init_tracing_with_logs_dir(data_dir, logs_dir_override.as_deref())
+}
+
+/// Variant of [`init_tracing`] that decouples the config-source `data_dir`
+/// (used to load `config.toml`'s `[logs]` block) from the on-disk logs
+/// directory. `logs_dir` is the directory the file appender writes into;
+/// when `None`, only stdout logging is installed.
+pub fn init_tracing_with_logs_dir(
+    data_dir: Option<&str>,
+    logs_dir: Option<&Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let logs_cfg = data_dir
         .map(expand_tilde)
         .and_then(|dir| ChorusConfig::load(&dir).ok().flatten())
@@ -61,13 +78,12 @@ pub fn init_tracing(data_dir: Option<&str>) -> Option<tracing_appender::non_bloc
         .with_line_number(true)
         .with_filter(level_filter());
 
-    let Some(dir) = data_dir else {
+    let Some(logs_dir) = logs_dir else {
         tracing_subscriber::registry().with(stdout_layer).init();
         return None;
     };
 
-    let logs_dir = expand_tilde(dir).join("logs");
-    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+    if let Err(e) = std::fs::create_dir_all(logs_dir) {
         tracing_subscriber::registry().with(stdout_layer).init();
         eprintln!(
             "warning: could not create {}: {e} — file logging disabled",
@@ -76,7 +92,7 @@ pub fn init_tracing(data_dir: Option<&str>) -> Option<tracing_appender::non_bloc
         return None;
     }
 
-    let appender = match build_appender(&logs_dir, &logs_cfg) {
+    let appender = match build_appender(logs_dir, &logs_cfg) {
         Ok(a) => a,
         Err(e) => {
             tracing_subscriber::registry().with(stdout_layer).init();

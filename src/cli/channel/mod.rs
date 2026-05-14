@@ -14,8 +14,8 @@ mod members;
 use anyhow::Context;
 use clap::Subcommand;
 
-pub(super) use chorus::store::channels::normalize_channel_name;
-pub(super) use chorus::utils::http;
+pub(super) use crate::store::channels::normalize_channel_name;
+pub(super) use crate::utils::http;
 
 /// Upper bound on `channel history --limit`. The server streams rows from
 /// SQLite without a cap of its own; clamp here so a typo like `--limit 99999`
@@ -24,7 +24,7 @@ pub(super) use chorus::utils::http;
 const HISTORY_LIMIT_MAX: i64 = 500;
 
 #[derive(Subcommand)]
-pub(crate) enum ChannelCommands {
+pub enum ChannelCommands {
     /// Create a new channel
     Create {
         name: String,

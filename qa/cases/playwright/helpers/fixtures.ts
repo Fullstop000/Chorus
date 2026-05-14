@@ -1,9 +1,9 @@
 /**
  * Per-worker isolated server fixture.
  *
- * By default each Playwright worker starts its own `chorus serve` process on a
- * dedicated port (3200 + workerIndex) with a temporary data directory, giving
- * every worker full isolation with no shared SQLite state.
+ * By default each Playwright worker starts its own `chorus-server` process on
+ * a dedicated port (3200 + workerIndex) with a temporary data directory,
+ * giving every worker full isolation with no shared SQLite state.
  *
  * Override with `CHORUS_BASE_URL` to point all workers at an existing server
  * (serial, shared-state mode — useful for debugging against a known dataset):
@@ -18,7 +18,8 @@ import path from 'path'
 import { registerBridgeToken, unregisterBridgeToken } from './tokens'
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../')
-const BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus')
+const SERVER_BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus-server')
+const CLI_BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus')
 const BASE_PORT = 3200
 const BASE_BRIDGE_PORT = 4400
 
@@ -28,8 +29,8 @@ const BASE_BRIDGE_PORT = 4400
 const workerDataDirs = new Map<number, string>()
 
 /**
- * Run `chorus setup --yes` against the worker's data dir so a local Account
- * + CLI token + bridge token exist before `chorus serve` starts. Without
+ * Run `chorus setup --yes` against the worker's data dir so a local
+ * Account + CLI token + bridge token exist before the server starts. Without
  * this, `/api/whoami` 401s on every request (no actor) and the UI's
  * `/api/auth/local-session` bootstrap returns 409 ("no local account").
  *
@@ -37,7 +38,7 @@ const workerDataDirs = new Map<number, string>()
  * auth state. `/health` is registered outside the `require_auth` layer.
  */
 function setupDataDir(dataDir: string): void {
-  const result = spawnSync(BINARY, ['setup', '--yes', '--data-dir', dataDir], {
+  const result = spawnSync(CLI_BINARY, ['setup', '--yes', '--data-dir', dataDir], {
     cwd: REPO_ROOT,
     stdio: 'pipe',
     encoding: 'utf-8',
@@ -131,8 +132,8 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
       setupDataDir(dataDir)
 
       const proc: ChildProcess = spawn(
-        BINARY,
-        ['serve', '--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
+        SERVER_BINARY,
+        ['--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
         { cwd: REPO_ROOT, stdio: 'pipe' }
       )
       // Optional log capture: set CHORUS_QA_LOG_DIR=/path/to/dir to dump
