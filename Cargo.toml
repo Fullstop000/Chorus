@@ -49,6 +49,13 @@ base64 = "0.22"
 sha2 = "0.10"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 
+# Release artifacts go through `.github/workflows/release.yml` and ship to
+# end-user machines (bridge devices) and cloud VMs — strip symbols so the
+# tarballs stay small without sacrificing panic backtraces (those use the
+# at-runtime backtrace formatter, not symbol tables on disk).
+[profile.release]
+strip = "symbols"
+
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
