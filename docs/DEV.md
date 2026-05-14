@@ -126,10 +126,10 @@ cd ui && npx tsc --noEmit       # typecheck only (no test run)
 cd ui && npm run build           # production build (tsc + vite build)
 ```
 
-Vitest covers ~48 tests across hooks, inbox, sidebar filters, and pure
-function helpers. There is currently **no React component testing
-infrastructure** (no testing-library, no jsdom) — component rendering is
-verified via `/gstack-qa` browser QA, not unit tests.
+Vitest covers hooks, inbox, sidebar filters, and pure function helpers.
+There is currently **no React component testing infrastructure** (no
+testing-library, no jsdom) — component rendering is verified via
+`/gstack-qa` browser QA, not unit tests.
 
 ### Browser QA
 
@@ -163,18 +163,8 @@ means:
 
 ## Branch and commit workflow
 
-### Branches
-
-1. Check the worktree is clean before switching branches.
-2. If local changes exist, commit, stash, or move them before switching.
-3. Start from an up-to-date `main` based on `origin/main`.
-4. Create branches with an `{agent}/` prefix: `claude/`, `codex/`, `kimi/`,
-   `opencode/`, etc. Use your agent name.
-5. Don't carry unrelated changes into a new branch.
-
-### Commits
-
-Conventional commits with a scope:
+Start from clean `main`. Don't carry unrelated changes into a new
+branch. Use conventional commits with a scope:
 
 - `feat(templates):` — new feature
 - `fix(store):` — bug fix
@@ -185,32 +175,9 @@ Conventional commits with a scope:
 - `chore:` — tooling, config, dependencies
 - `ci:` — CI/CD configuration
 
-Each commit should be **one logical change** that's independently valid.
+Each commit is one logical change that's independently valid.
 Bisectable commits are the goal: if a bug is introduced, `git bisect`
 should land on exactly the commit that caused it.
-
----
-
-## Verification policy
-
-Do not claim complete without matching verification.
-
-**Minimum:**
-
-1. Run focused Rust tests for affected modules
-2. Run `cargo test --test e2e_tests` when backend message / task / DM /
-   thread / agent flow is affected
-3. For user-facing changes, run `/gstack-qa` (authoritative browser QA)
-
-**Escalation:**
-
-- Backend or data-path changes: Rust tests first, then e2e
-- Core user process changes: `/gstack-qa` mandatory — backend tests alone
-  are not sufficient
-- Core paths: channel messaging, DM flows, thread replies, task board,
-  agent loops
-- If `/gstack-qa` cannot run (no dev server, external blocker), state it
-  clearly; don't claim "fully verified"
 
 ---
 
