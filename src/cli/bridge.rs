@@ -278,23 +278,14 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
         store,
     };
 
-    // Out-of-process bridge: a terminal auth error (401 on upgrade,
-    // 4004 kicked, 4005 token_revoked) is a user-actionable signal,
-    // not a transient failure. Print the message and exit 2 so process
-    // supervisors stop restarting and a human notices. Any other error
-    // bubbles up to clap, which exits 1.
-    match client::run_bridge_client(cfg).await {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if let Some(terminal) =
-                err.downcast_ref::<crate::bridge::client::BridgeTerminalError>()
-            {
-                eprintln!("\n{terminal}\n");
-                std::process::exit(2);
-            }
-            Err(err)
-        }
-    }
+    // A terminal auth error (401 on upgrade, 4004 kicked, 4005
+    // token_revoked) is a user-actionable signal, not a transient
+    // failure. We surface it as a typed `BridgeTerminalError` so the
+    // caller — the `chorus` bin — can print + `exit(2)` to stop the
+    // process supervisor from restarting. Exiting here would skip
+    // dropping the bin's tracing `WorkerGuard` and lose queued log
+    // writes; the bin handles the exit instead.
+    client::run_bridge_client(cfg).await
 }
 
 #[cfg(test)]

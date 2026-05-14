@@ -158,7 +158,7 @@ pub fn resolve_cli_token() -> anyhow::Result<String> {
     let data_dir = std::path::Path::new(&data_dir_str);
     let creds = credentials::load(data_dir)?.ok_or_else(|| {
         CliError(format!(
-            "no credentials at {} (and CHORUS_TOKEN unset); run `platform setup` or `platform login --local`",
+            "no credentials at {} (and CHORUS_TOKEN unset); run `chorus setup` or `chorus login --local`",
             credentials::path_for(data_dir).display()
         ))
     })?;
@@ -193,7 +193,7 @@ pub async fn fetch_authed_user_with_token(
     let body = res.text().await.unwrap_or_default();
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(CliError(
-            "authentication failed; the token may be revoked. Run `platform login --local`".into(),
+            "authentication failed; the token may be revoked. Run `chorus login --local`".into(),
         )
         .into());
     }

@@ -118,6 +118,17 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
+        // Terminal bridge auth errors (kicked / token revoked / 401 on
+        // upgrade) are user-actionable. Exit 2 so process supervisors
+        // stop restarting and a human investigates. The `run()` future
+        // has already returned, so its `_log_guard` has dropped and
+        // flushed pending log writes before we get here.
+        if let Some(terminal) =
+            e.downcast_ref::<chorus::bridge::client::BridgeTerminalError>()
+        {
+            eprintln!("\n{terminal}\n");
+            std::process::exit(2);
+        }
         if let Some(user_err) = e.downcast_ref::<CliError>() {
             eprintln!("Error: {user_err}");
         } else {
