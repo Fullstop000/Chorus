@@ -17,10 +17,7 @@ use chorus::agent::templates::expand_tilde;
 use chorus::cli::{default_data_dir, resolve_template_dir, serve, CliError};
 
 #[derive(Parser)]
-#[command(
-    name = "chorus-server",
-    about = "Chorus platform server daemon"
-)]
+#[command(name = "chorus-server", about = "Chorus platform server daemon")]
 struct Cli {
     /// HTTP listen port for the platform API + web UI.
     #[arg(long, default_value = "3001")]
@@ -66,10 +63,8 @@ async fn run() -> anyhow::Result<()> {
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(|| expand_tilde(&data_dir_str).join("logs"));
-    let _log_guard = chorus::logging::init_tracing_with_logs_dir(
-        Some(&data_dir_str),
-        Some(&logs_dir),
-    );
+    let _log_guard =
+        chorus::logging::init_tracing_with_logs_dir(Some(&data_dir_str), Some(&logs_dir));
 
     let template_dir_str = resolve_template_dir(&data_dir_str, cli.template_dir);
     serve::run(cli.port, data_dir_str, template_dir_str, cli.bridge_port).await

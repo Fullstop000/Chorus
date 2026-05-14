@@ -123,9 +123,7 @@ async fn main() {
         // stop restarting and a human investigates. The `run()` future
         // has already returned, so its `_log_guard` has dropped and
         // flushed pending log writes before we get here.
-        if let Some(terminal) =
-            e.downcast_ref::<chorus::bridge::client::BridgeTerminalError>()
-        {
+        if let Some(terminal) = e.downcast_ref::<chorus::bridge::client::BridgeTerminalError>() {
             eprintln!("\n{terminal}\n");
             std::process::exit(2);
         }

@@ -139,4 +139,3 @@ pub fn build_bridge_router(
 
     (app, ct)
 }
-
