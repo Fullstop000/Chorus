@@ -203,7 +203,7 @@ Use the `tracing` crate. **Never `eprintln!` / `println!` in library code.**
 
 Standard dev invocation:
 ```bash
-RUST_LOG=chorus=info ./target/debug/chorus serve --port 3001
+RUST_LOG=chorus=info ./target/debug/chorus-server --port 3001
 ```
 
 Prefer structured fields over string interpolation:
@@ -223,7 +223,6 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | `tests/e2e_tests.rs` | HTTP + WebSocket end-to-end | Router or event stream changes |
 | `tests/realtime_tests.rs` | WebSocket / StreamEvent | Realtime transport changes |
 | `tests/server_tests.rs` | HTTP handlers (test router) | Handler logic changes |
-| `tests/driver_tests.rs` | Agent runtime drivers | New driver or driver fix |
 | `tests/check_impl.rs` | Type-level / trait checks | Generic constraints |
 | `tests/bridge_serve_tests.rs` | Shared bridge HTTP + per-agent isolation | Bridge serve or `Backend` trait changes |
 | `#[cfg(test)]` modules | Pure function unit tests | Module-local utilities |
@@ -260,7 +259,7 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | **Agent drivers** | `src/agent/drivers/` | ACP trait + raw implementations |
 | **Driver selection** | `src/agent/drivers/mod.rs` | `driver_for_runtime()` |
 | **Agent lifecycle** | `src/agent/manager.rs` | Spawn, session, event dispatch |
-| **MCP bridge (shared)** | `src/bridge/serve.rs` | `chorus bridge-serve` HTTP daemon |
+| **MCP bridge (shared)** | `src/bridge/serve.rs` | In-process MCP HTTP daemon started by `chorus-server` |
 | **MCP bridge (backend)** | `src/bridge/backend.rs` | `Backend` trait + `ChorusBackend` impl |
 | **Bridge discovery** | `src/bridge/discovery.rs` | `read_bridge_info()` — PID-validated `~/.chorus/bridge.json` |
 
@@ -303,11 +302,11 @@ See `docs/DRIVERS.md` for the full guide. Key principle: capture a wire trace fr
 
 ## Phase 3 Architecture: Bridge ↔ Platform Split
 
-Chorus runs as one process by default (`chorus serve`). For cross-machine
+Chorus runs as one process by default (`chorus-server`). For cross-machine
 deployment it splits into two:
 
 ```
-┌── Platform (chorus serve) ────────┐         ┌── Bridge (chorus bridge) ─┐
+┌── Server (chorus-server) ─────────┐         ┌── Bridge (chorus bridge) ─┐
 │  - HTTP API + WS realtime         │  WS     │  - Embedded MCP HTTP      │
 │  - SQLite (canonical store)       │ ◀────▶  │  - AgentManager           │
 │  - BridgeRegistry                 │ /api/   │  - Local SQLite (synced   │
@@ -399,11 +398,12 @@ src/cli/bridge.rs           clap subcommand wiring for `chorus bridge`
 
 ### What still single-process
 
-`chorus serve` with no bridges connected behaves identically to pre-Phase-3
-Chorus: `agents.machine_id` is NULL, every lifecycle gate falls through,
-and the in-process MCP bridge handles tool-calls. The split kicks in only
-when an agent is created (or updated) with a non-null `machineId` and a
-remote `chorus bridge` is running for that id.
+`chorus-server` with no bridges connected behaves identically to
+pre-Phase-3 Chorus: `agents.machine_id` is NULL, every lifecycle gate
+falls through, and the in-process MCP bridge handles tool-calls. The
+split kicks in only when an agent is created (or updated) with a
+non-null `machineId` and a remote `chorus bridge` is running for that
+id.
 
 ---
 
@@ -414,5 +414,5 @@ remote `chorus bridge` is running for that id.
 - `docs/ACP.md` — ACP driver SOP and debugging
 - `docs/DRIVERS.md` — Adding new agent runtimes
 - `docs/INBOX.md` — Unread and read cursor mechanics
-- `docs/BRIDGE.md` — Shared MCP bridge architecture, `bridge-serve`, driver conversion guide
+- `docs/BRIDGE.md` — Shared MCP bridge architecture, per-runtime MCP config, troubleshooting
 - `docs/plan/bridge-platform-protocol.md` — Phase 3 bridge ↔ platform wire protocol (r5)

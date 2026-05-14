@@ -38,57 +38,10 @@ Not just "the process starts." The goal is:
 - the runtime replies through `send_message`, not raw stdout text
 - the runtime does not regress the user-visible DM and activity flows
 
----
-
-## Where Driver Support Lives
-
-New driver work usually touches these files:
-
-- `src/agent/drivers/<runtime>.rs`
-  - implements `RuntimeDriver` (struct + `open_session`) and the `Session` handle
-- `src/agent/drivers/mod.rs`
-  - module registration, shared types, `EventFanOut`, `AgentRegistry`
-- `src/agent/manager.rs`
-  - driver selection, session lifecycle (`open_session` → `run`), event forwarder wiring
-- `src/main.rs`
-  - CLI defaults or runtime-specific model choices when needed
-- `src/server/handlers/dto.rs`
-  - API runtime enum validation when needed
-- `src/store/agents.rs`
-  - persisted runtime/model support when needed
-- `ui/src/components/AgentConfigForm.tsx`
-  - runtime exposed in the create/edit UI
-- `ui/src/components/ProfilePanel.tsx`
-  - runtime/model rendering if the profile badges or labels need updates
-- `tests/live_runtime_tests.rs`
-  - `open_session` + `run` + `prompt` integration tests
-- `tests/live_multi_session_tests.rs`
-  - multi-session concurrency tests
-- `tests/server_tests.rs`
-  - runtime create/update API coverage when needed
-- `qa/cases/playwright/AGT-002.spec.ts`
-  - create/start matrix coverage
-- `qa/cases/playwright/<RUNTIME-CASE>.spec.ts`
-  - runtime-specific DM reply verification
-
----
-
-## Shared Bridge
-
-Every driver gets an `AgentSpec` when it is spawned. `AgentSpec.bridge_endpoint` is a
-required `String` pointing at the shared HTTP bridge (for example
-`"http://127.0.0.1:4321"`); populated by `AgentManager::start_agent` from
-`~/.chorus/bridge.json`. If the bridge is not running the manager fails loudly —
-there is no stdio fallback.
-
-In `open_session` or `run`, request a per-agent pairing token:
-
-```rust
-let token = super::request_pairing_token(&spec.bridge_endpoint, &key).await?;
-```
-
-Then point the runtime's MCP config at `{bridge_endpoint}/token/{token}/mcp` using the
-runtime-specific config shape (see `docs/BRIDGE.md` for a per-runtime table).
+For the driver API contract, the file-by-file layout of where driver
+support lives, and the shared-bridge pairing-token pattern, see
+`docs/DRIVERS.md`. This guide is the practical how-to; that one is the
+reference.
 
 ---
 
@@ -116,14 +69,18 @@ Before writing much code, answer these questions from the real runtime:
 
 ### Recommended Probe
 
-Use a tiny one-off probe before integrating fully:
+Capture at least one raw sample before integrating fully:
 
-1. Start `chorus bridge-serve` pointed at a local chorus server, then point
-   the runtime's MCP config at `http://127.0.0.1:4321/<test-agent>/mcp`
-   (the bridge keys sessions by the URL path segment).
-2. Run the runtime directly in its print/JSON mode
-3. Send one minimal prompt that asks it to call `send_message`
-4. Capture raw stdout and stderr
+1. Start `chorus-server` — the in-process bridge listens on
+   `127.0.0.1:<bridge-port>` (default `4321`) and writes
+   `~/.chorus/bridge.json`.
+2. Pair manually: `POST {bridge}/admin/pair` with the agent key, take
+   the opaque token, and point the runtime's MCP config at
+   `{bridge}/token/{token}/mcp`. See `docs/BRIDGE.md` for the
+   per-runtime config shape.
+3. Run the runtime directly in its print / JSON mode.
+4. Send one minimal prompt that asks it to call `send_message`.
+5. Capture raw stdout and stderr.
 
 You want at least one saved raw sample for:
 
