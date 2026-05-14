@@ -65,53 +65,27 @@ See `ui/vite.config.ts` for the proxy configuration.
 `chorus-server` starts the shared bridge in-process automatically (default port 4321,
 configurable via `--bridge-port`). You don't need to run anything extra.
 
-See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
+See `docs/BRIDGE.md` for the full architecture and driver implementation
 guide.
 
-### Two-process mode (Phase 3 bridge ↔ platform split)
+### Cross-machine mode (server + bridge)
 
 For cross-machine deployment, Chorus runs as two separate processes:
 
-- **Platform** (`chorus-server`) — HTTP API, WebSocket realtime, SQLite, no
-  agent runtimes spawned locally.
-- **Bridge** (`bridge`) — connects to a remote platform via
-  `GET /api/bridge/ws`, hosts the agent runtime processes, proxies their
-  MCP tool-calls back to the platform's HTTP API.
+- **Server** (`chorus-server`) — HTTP API, WebSocket realtime, SQLite,
+  no agent runtimes spawned locally.
+- **Bridge** (`chorus bridge`) — connects to a remote server via
+  `GET /api/bridge/ws`, hosts the agent runtime processes, proxies
+  their MCP tool-calls back to the server's HTTP API.
 
-Run them in two terminals (or two machines):
+Mint a bridge token from the server's Settings → Devices first, paste
+the one-liner it generates. The bridge reads host + token from
+`$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml`; the WS upgrade
+is bearer-protected, no env-var wiring required.
 
-```bash
-# Platform — terminal 1
-chorus-server --port 4101 --data-dir /tmp/chorus-platform
-
-# Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds).
-# Mint a bridge token from the platform's Settings → Devices first; paste
-# the one-liner it generates. The bridge reads host + token from
-# $XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml.
-chorus bridge --data-dir /tmp/chorus-bridge
-```
-
-Create an agent and bind it to the bridge by setting `machineId`:
-
-```bash
-curl -X POST http://127.0.0.1:4101/api/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"alice","display_name":"Alice","runtime":"claude","model":"sonnet","machineId":"m-1"}'
-```
-
-The platform pushes a `bridge.target` frame to the bridge; the bridge spawns
-the runtime locally and starts streaming `agent.state` upstream. Sending a
-chat to `@alice` reaches the bridge over WS, the bridge wakes the runtime,
-and the agent's `mcp__chat__send_message` reply lands back on the platform.
-
-For production deployments, the WS upgrade is bearer-protected via the
-per-user bridge tokens minted in Settings → Devices. The token lives in
-the device's `bridge-credentials.toml`; no env-var wiring required.
-
-`tokio-tungstenite` is built with the `rustls-tls-webpki-roots` feature
-so `wss://` works out of the box. See `docs/plan/bridge-platform-protocol.md`
-for the full wire contract and `docs/BACKEND.md` § Phase 3 architecture for
-the platform/bridge ownership split.
+See `docs/plan/bridge-platform-protocol.md` for the wire contract and
+`docs/BACKEND.md` § Phase 3 architecture for the server/bridge
+ownership split.
 
 ### CLI commands
 

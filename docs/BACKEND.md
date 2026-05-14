@@ -414,5 +414,5 @@ remote `chorus bridge` is running for that id.
 - `docs/ACP.md` — ACP driver SOP and debugging
 - `docs/DRIVERS.md` — Adding new agent runtimes
 - `docs/INBOX.md` — Unread and read cursor mechanics
-- `docs/BRIDGE_MIGRATION.md` — Shared MCP bridge architecture, `bridge-serve`, driver conversion guide
+- `docs/BRIDGE.md` — Shared MCP bridge architecture, `bridge-serve`, driver conversion guide
 - `docs/plan/bridge-platform-protocol.md` — Phase 3 bridge ↔ platform wire protocol (r5)

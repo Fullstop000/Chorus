@@ -88,7 +88,7 @@ let token = super::request_pairing_token(&spec.bridge_endpoint, &key).await?;
 ```
 
 Then point the runtime's MCP config at `{bridge_endpoint}/token/{token}/mcp` using the
-runtime-specific config shape (see `docs/BRIDGE_MIGRATION.md` for a per-runtime table).
+runtime-specific config shape (see `docs/BRIDGE.md` for a per-runtime table).
 
 ---
 
