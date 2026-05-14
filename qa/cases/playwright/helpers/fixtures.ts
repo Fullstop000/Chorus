@@ -1,9 +1,9 @@
 /**
  * Per-worker isolated server fixture.
  *
- * By default each Playwright worker starts its own `chorus serve` process on a
- * dedicated port (3200 + workerIndex) with a temporary data directory, giving
- * every worker full isolation with no shared SQLite state.
+ * By default each Playwright worker starts its own `chorus-server` process on
+ * a dedicated port (3200 + workerIndex) with a temporary data directory,
+ * giving every worker full isolation with no shared SQLite state.
  *
  * Override with `CHORUS_BASE_URL` to point all workers at an existing server
  * (serial, shared-state mode — useful for debugging against a known dataset):
@@ -18,7 +18,7 @@ import path from 'path'
 import { registerBridgeToken, unregisterBridgeToken } from './tokens'
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../')
-const BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus')
+const BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus-server')
 const BASE_PORT = 3200
 const BASE_BRIDGE_PORT = 4400
 
@@ -28,8 +28,8 @@ const BASE_BRIDGE_PORT = 4400
 const workerDataDirs = new Map<number, string>()
 
 /**
- * Run `chorus setup --yes` against the worker's data dir so a local Account
- * + CLI token + bridge token exist before `chorus serve` starts. Without
+ * Run `chorus-server setup --yes` against the worker's data dir so a local
+ * Account + CLI token + bridge token exist before the server starts. Without
  * this, `/api/whoami` 401s on every request (no actor) and the UI's
  * `/api/auth/local-session` bootstrap returns 409 ("no local account").
  *
@@ -44,13 +44,13 @@ function setupDataDir(dataDir: string): void {
   })
   if (result.status !== 0) {
     throw new Error(
-      `chorus setup failed (exit ${result.status}):\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+      `chorus-server setup failed (exit ${result.status}):\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
     )
   }
 }
 
 /**
- * Read the CLI bearer token that `chorus setup --yes` wrote to
+ * Read the CLI bearer token that `chorus-server setup --yes` wrote to
  * `credentials.toml`. Used to pre-authenticate the `request` fixture so
  * existing helpers that hit `/api/*` keep working without each one
  * threading auth through.
@@ -105,7 +105,7 @@ async function pollServer(url: string, timeoutMs: number): Promise<void> {
 // that worker).
 type WorkerFixtures = {
   workerServerUrl: string
-  /** Bearer token for the worker's local install, written by `chorus setup`.
+  /** Bearer token for the worker's local install, written by `chorus-server setup`.
    *  Empty when CHORUS_BASE_URL is set (external server) — tests using the
    *  `request` fixture against an external server must seed their own auth. */
   workerCliToken: string
@@ -132,7 +132,7 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
 
       const proc: ChildProcess = spawn(
         BINARY,
-        ['serve', '--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
+        ['--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
         { cwd: REPO_ROOT, stdio: 'pipe' }
       )
       // Optional log capture: set CHORUS_QA_LOG_DIR=/path/to/dir to dump
@@ -155,7 +155,7 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
         // Surface the failure rather than silently leaving helpers without
         // a bridge token — every test that hits /internal/agent/<agent>/*
         // would 401 with a confusing message.
-        throw new Error(`failed to read bridge token after chorus setup: ${err}`)
+        throw new Error(`failed to read bridge token after chorus-server setup: ${err}`)
       }
       try {
         await pollServer(serverUrl, 30_000)
@@ -194,7 +194,7 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
 
   // Override the built-in `request` fixture so API helpers hit the same
   // per-worker server with the worker's bearer token. The token comes from
-  // `chorus setup --yes` (writes `credentials.toml`); tests using
+  // `chorus-server setup --yes` (writes `credentials.toml`); tests using
   // `playwright.request.newContext` directly opt out of pre-auth.
   request: async ({ playwright, workerServerUrl, workerCliToken }, use) => {
     const context = await playwright.request.newContext({

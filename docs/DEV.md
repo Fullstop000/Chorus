@@ -27,7 +27,7 @@ React frontend. Run both in parallel.
 **Backend** (terminal 1):
 
 ```bash
-RUST_LOG=chorus=info cargo run -- serve --port 3001
+RUST_LOG=chorus=info cargo run --bin chorus-server -- --port 3001
 ```
 
 Output ends with `Chorus running at http://localhost:3001`. The server:
@@ -36,11 +36,12 @@ Output ends with `Chorus running at http://localhost:3001`. The server:
 - Serves the HTTP API at `:3001/api/*`
 - Opens a WebSocket at `:3001/internal/*` for the realtime event stream
 - Auto-restores previously-active agents on startup — if you killed
-  `chorus serve` while agents were running, they come back on the next
+  `chorus-server` while agents were running, they come back on the next
   boot without manual intervention
 
 Override the port with `--port <N>`. Override the template directory with
-`--template-dir <PATH>` or `CHORUS_TEMPLATE_DIR=<PATH>`.
+`--template-dir <PATH>` or `CHORUS_TEMPLATE_DIR=<PATH>`. Pass `--log-dir
+<PATH>` to redirect logs away from `<data_dir>/logs`.
 
 **Frontend** (terminal 2):
 
@@ -61,12 +62,12 @@ See `ui/vite.config.ts` for the proxy configuration.
 
 **Shared MCP bridge:**
 
-`chorus serve` starts the shared bridge in-process automatically (default port 4321,
+`chorus-server` starts the shared bridge in-process automatically (default port 4321,
 configurable via `--bridge-port`). You don't need to run anything extra. If you want
 to run the bridge standalone:
 
 ```bash
-chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
+chorus-server bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
 ```
 
 ```bash
@@ -81,9 +82,9 @@ guide.
 
 For cross-machine deployment, Chorus runs as two separate processes:
 
-- **Platform** (`chorus serve`) — HTTP API, WebSocket realtime, SQLite, no
+- **Platform** (`chorus-server`) — HTTP API, WebSocket realtime, SQLite, no
   agent runtimes spawned locally.
-- **Bridge** (`chorus bridge`) — connects to a remote platform via
+- **Bridge** (`bridge`) — connects to a remote platform via
   `GET /api/bridge/ws`, hosts the agent runtime processes, proxies their
   MCP tool-calls back to the platform's HTTP API.
 
@@ -91,10 +92,10 @@ Run them in two terminals (or two machines):
 
 ```bash
 # Platform — terminal 1
-chorus serve --port 4101 --data-dir /tmp/chorus-platform
+chorus-server --port 4101 --data-dir /tmp/chorus-platform
 
 # Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds)
-chorus bridge \
+bridge \
   --platform-ws ws://127.0.0.1:4101/api/bridge/ws \
   --platform-http http://127.0.0.1:4101 \
   --machine-id m-1 \
@@ -120,11 +121,11 @@ For production deployments, secure the WS upgrade with bearer tokens:
 ```bash
 # On the platform process:
 export CHORUS_BRIDGE_TOKENS="secret-for-m1:m-1,secret-for-m2:m-2"
-chorus serve --port 4101
+chorus-server --port 4101
 
 # On each bridge:
 export CHORUS_BRIDGE_TOKEN=secret-for-m1
-chorus bridge --platform-ws wss://platform.example/api/bridge/ws ...
+bridge --platform-ws wss://platform.example/api/bridge/ws ...
 ```
 
 `tokio-tungstenite` is built with the `rustls-tls-webpki-roots` feature
@@ -137,12 +138,12 @@ the platform/bridge ownership split.
 See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
 
 ```bash
-chorus setup                    # first-run initializer
-chorus check                    # read-only environment diagnostic
-chorus start --port 3001        # start server + open browser
-chorus serve --port 3001        # start server, no browser
-chorus bridge ...               # remote runtime, connects to a platform via WS
-chorus bridge-serve ...         # standalone MCP bridge (in-process by default)
+chorus-server setup                       # first-run initializer
+chorus-server check                       # read-only environment diagnostic
+chorus-server --port 3001                 # run the server (HTTP API + embedded UI)
+chorus-server --port 3001 --open          # also open the web UI in a browser
+bridge                                    # remote agent runtime (reads bridge-credentials.toml)
+chorus-server bridge-serve ...            # standalone MCP bridge (in-process by default)
 ```
 
 ---
@@ -192,10 +193,10 @@ fix bugs it finds. The case catalog and templates still live under
 
 ## Killing and restarting the server
 
-`chorus serve` auto-restores previously-active agents on startup. This
+`chorus-server` auto-restores previously-active agents on startup. This
 means:
 
-- **Safe to kill during QA or rebuild.** `pkill -f 'chorus serve'`, rebuild,
+- **Safe to kill during QA or rebuild.** `pkill -f 'chorus-server'`, rebuild,
   restart — the agents come back automatically.
 - **Agent state survives.** Agents are stored in SQLite; the running
   processes are just bridges. Restarting the server re-spawns the bridges
@@ -262,9 +263,9 @@ Do not claim complete without matching verification.
 
 ## Troubleshooting
 
-### "Port already in use" on `cargo run -- serve --port 3001`
+### "Port already in use" on `cargo run --bin chorus-server -- --port 3001`
 
-Another `chorus serve` is running. `pkill -f 'chorus serve'` then retry.
+Another `chorus-server` is running. `pkill -f 'chorus-server'` then retry.
 
 ### Vite proxy 502 / 504
 
@@ -275,7 +276,7 @@ The backend isn't running or is on a different port. Check with
 ### SQLite schema out of sync after editing `schema.sql`
 
 Views are rebuilt on every startup (`DROP VIEW IF EXISTS ... CREATE VIEW`).
-Restart `chorus serve` and the new view definition takes effect. Tables
+Restart `chorus-server` and the new view definition takes effect. Tables
 are additive via `CREATE TABLE IF NOT EXISTS`, so column additions need a
 real migration in `src/store/migrations.rs`.
 

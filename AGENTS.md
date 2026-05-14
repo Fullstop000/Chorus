@@ -18,8 +18,9 @@ AI agent collaboration platform. Agents run as OS processes and communicate thro
 
 ```bash
 # Run
-cargo run -- serve --port 3001        # backend
-cd ui && npm run dev                   # frontend (proxies to :3001)
+cargo run --bin chorus-server -- --port 3001   # backend (HTTP + UI)
+cargo run --bin bridge                          # bridge daemon (per-machine)
+cd ui && npm run dev                            # frontend (proxies to :3001)
 
 # Test
 cargo test                             # all Rust tests

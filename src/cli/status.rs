@@ -5,7 +5,7 @@
 //! The CLI does not assume the OS user matches any Chorus identity.
 
 pub async fn run(server_url: String) -> anyhow::Result<()> {
-    let client = chorus::utils::http::client();
+    let client = crate::utils::http::client();
     let (me, token) = crate::cli::fetch_authed_user_with_token(&client, &server_url).await?;
     let res = client
         .get(format!("{server_url}/internal/agent/{}/server", me.id))

@@ -12,9 +12,9 @@
 
 use std::sync::Arc;
 
-use chorus::agent::manager::AgentManager;
-use chorus::server::event_bus::EventBus;
-use chorus::store::Store;
+use crate::agent::manager::AgentManager;
+use crate::server::event_bus::EventBus;
+use crate::store::Store;
 use tokio_util::sync::CancellationToken;
 
 use super::DATA_SUBDIR;
@@ -40,7 +40,7 @@ pub async fn run(
     // disabled outright. An empty allowlist is always a misconfiguration.
     // Validate up front so callers see a clear message instead of a
     // panic from inside the router builder.
-    let dev_auth_cfg = chorus::server::auth::dev_login::load_dev_auth_config()
+    let dev_auth_cfg = crate::server::auth::dev_login::load_dev_auth_config()
         .map_err(|msg| anyhow::anyhow!("{msg}"))?;
     if dev_auth_cfg.enabled {
         tracing::warn!(
@@ -107,8 +107,8 @@ pub async fn run(
     // this server's own agents use the explicit in-process bridge override
     // above, so isolated QA instances can coexist without stealing the global
     // discovery slot from the user's main server.
-    let _discovery_guard = match chorus::bridge::discovery::write_bridge_info(
-        &chorus::bridge::discovery::BridgeInfo {
+    let _discovery_guard = match crate::bridge::discovery::write_bridge_info(
+        &crate::bridge::discovery::BridgeInfo {
             port: actual_bridge_port,
             pid: std::process::id(),
             started_at: chrono::Utc::now().to_rfc3339(),
@@ -121,7 +121,7 @@ pub async fn run(
             // actually serving HTTP would leave a stale file that the
             // next `chorus serve` reads as "another chorus is alive,"
             // permanently blocking startup.
-            Some(chorus::bridge::discovery::DiscoveryGuard)
+            Some(crate::bridge::discovery::DiscoveryGuard)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             tracing::warn!(
@@ -148,7 +148,7 @@ pub async fn run(
         .flatten()
         .map(|c| c.token);
     let (bridge_app, bridge_ct) =
-        chorus::bridge::serve::build_bridge_router(&server_url, bridge_token.clone());
+        crate::bridge::serve::build_bridge_router(&server_url, bridge_token.clone());
     // Cascade the shared shutdown token into the bridge's internal CT so any
     // in-flight MCP sessions (child tokens spawned per request) drain when
     // Ctrl-C fires. Without this, axum stops accepting connections but active
@@ -178,25 +178,25 @@ pub async fn run(
     // ensures resume continuity when the next start happens.
 
     // Load agent templates from the configured directory.
-    let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);
-    let templates = chorus::agent::templates::load_templates(&template_path);
+    let template_path = crate::agent::templates::expand_tilde(&template_dir_raw);
+    let templates = crate::agent::templates::load_templates(&template_path);
 
-    let router = chorus::server::build_router_with_services(
+    let router = crate::server::build_router_with_services(
         store.clone(),
         event_bus.clone(),
         data_dir.clone(),
         agents_dir.clone(),
         manager.clone(),
         Arc::new(
-            chorus::agent::runtime_status::SystemRuntimeStatusProvider::new(
-                chorus::agent::manager::build_driver_registry(),
+            crate::agent::runtime_status::SystemRuntimeStatusProvider::new(
+                crate::agent::manager::build_driver_registry(),
             ),
-        ) as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
+        ) as crate::agent::runtime_status::SharedRuntimeStatusProvider,
         templates,
     );
 
     // Spawn background trace writer for Telescope persistence.
-    chorus::store::trace_writer::spawn_trace_writer(
+    crate::store::trace_writer::spawn_trace_writer(
         db_path.to_str().unwrap().to_string(),
         event_bus.subscribe_traces(),
     );
@@ -210,7 +210,7 @@ pub async fn run(
     // CRUD broadcasts to a live receiver. The dial loop's own backoff
     // covers the brief gap between this spawn and `axum::serve`
     // accepting on the listener.
-    let in_proc_machine_id = chorus::server::resolve_local_machine_id_for_serve(&data_dir);
+    let in_proc_machine_id = crate::server::resolve_local_machine_id_for_serve(&data_dir);
     let in_proc_ws_url = format!("ws://127.0.0.1:{port}/api/bridge/ws");
     // Reuse the bridge token loaded above so the WS upgrade passes the
     // platform's `require_bridge_auth` check.
@@ -219,7 +219,7 @@ pub async fn run(
     let in_proc_manager = manager.clone();
     let in_proc_store = store.clone();
     tokio::spawn(async move {
-        if let Err(err) = chorus::bridge::client::run_in_process_bridge_client(
+        if let Err(err) = crate::bridge::client::run_in_process_bridge_client(
             in_proc_ws_url,
             in_proc_machine_id,
             in_proc_bearer,

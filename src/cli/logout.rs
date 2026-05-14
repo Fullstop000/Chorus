@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::{credentials, default_data_dir};
-use chorus::store::Store;
+use crate::store::Store;
 
 const DATA_SUBDIR: &str = "data";
 

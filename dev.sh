@@ -76,7 +76,7 @@ if port_in_use "$API_PORT"; then
   IS_CHORUS=false
   if [ -n "$PORT_PID" ]; then
     PROC_CMD=$(ps -o comm= -p "$PORT_PID" 2>/dev/null | xargs basename 2>/dev/null)
-    if [ "$PROC_CMD" = "chorus" ]; then
+    if [ "$PROC_CMD" = "chorus-server" ]; then
       IS_CHORUS=true
     fi
   fi
@@ -122,17 +122,17 @@ if [ "$WIPED_DATA" = true ]; then
 else
   echo -e "${YELLOW}▶ Ensuring Chorus setup is initialized...${RESET}"
 fi
-"$ROOT/target/debug/chorus" setup 2>/dev/null || \
-  cargo run --quiet -- setup
+"$ROOT/target/debug/chorus-server" setup 2>/dev/null || \
+  cargo run --bin chorus-server --quiet -- setup
 
 # ── Build Rust binary if needed ──
-echo -e "${YELLOW}▶ Building chorus...${RESET}"
+echo -e "${YELLOW}▶ Building chorus-server...${RESET}"
 cd "$ROOT"
 cargo build 2>&1 | grep -E "^error|Compiling chorus|Finished" || true
 
 # ── Start Rust server ──
-echo -e "${YELLOW}▶ Starting chorus server on :$API_PORT...${RESET}"
-"$ROOT/target/debug/chorus" serve --port "$API_PORT" &
+echo -e "${YELLOW}▶ Starting chorus-server on :$API_PORT...${RESET}"
+"$ROOT/target/debug/chorus-server" --port "$API_PORT" &
 CHORUS_PID=$!
 
 # ── Wait for server to be ready ──

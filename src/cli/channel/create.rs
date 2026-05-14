@@ -11,10 +11,10 @@ pub async fn run(
     server_url: &str,
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
-    if !chorus::store::channels::is_valid_channel_name(&normalized) {
+    if !crate::store::channels::is_valid_channel_name(&normalized) {
         return Err(crate::cli::CliError(format!(
             "{}: {normalized}",
-            chorus::store::channels::INVALID_CHANNEL_NAME_MSG
+            crate::store::channels::INVALID_CHANNEL_NAME_MSG
         ))
         .into());
     }

@@ -1,179 +1,123 @@
 # Chorus CLI Reference
 
-Complete reference for the `chorus` command-line interface.
+Two binaries:
+
+- `chorus-server` — the platform: HTTP API + WebSocket bridge + embedded UI, plus admin subcommands.
+- `bridge` — the per-machine bridge daemon that hosts local agent runtimes against a remote `chorus-server`.
 
 ---
 
-## Commands
+## `chorus-server`
 
-### `chorus setup`
-
-First-run initializer. Detects installed AI runtimes, probes authentication status, writes `config.toml`, creates the data directory layout, creates a local workspace, and migrates legacy configurations.
+Default invocation (no subcommand) runs the server with the embedded UI:
 
 ```bash
-chorus setup
-chorus setup --yes                    # non-interactive, accept defaults including "Chorus Local"
-chorus setup --data-dir /custom/path  # override default ~/.chorus
+chorus-server                                       # defaults: --port 3001, ~/.chorus
+chorus-server --port 3001                           # explicit port
+chorus-server --port 3001 --log-dir /var/log/chorus # custom log root
+chorus-server --data-dir /var/lib/chorus            # custom data root (SQLite + agents)
+chorus-server --bridge-port 4321                    # custom in-process MCP bridge port
+chorus-server --open                                # open the web UI in a browser (local dev)
 ```
 
-**What it does:**
-- Detects claude, codex, kimi, opencode, and gemini binaries on `$PATH`
-- Probes each runtime's auth state (API keys, OAuth tokens, login status)
-- Writes `~/.chorus/config.toml` with detected runtime settings
-- Creates `data/`, `logs/`, and `agents/` subdirectories
-- Creates an explicit local workspace; interactive setup prompts for a name with `Chorus Local` as the default
-- Persists the local human identity used for workspace ownership
-- Generates a `machine_id` UUID for this installation
+**Top-level flags:**
 
-**Mutates:** yes (writes config, creates directories).
-
----
-
-### `chorus workspace`
-
-Manages platform workspaces for the local Chorus instance. Workspace is the platform boundary for channels, agents, teams, tasks, and future cloud sync.
-
-```bash
-chorus workspace current
-chorus workspace list
-chorus workspace create "Side Project"
-chorus workspace switch side-project
-chorus workspace rename "Side Project AI"
-chorus workspace --server-url http://localhost:3001 current
-```
-
-**Behavior:**
-- Calls the running Chorus server API; start Chorus first with `chorus start` or `chorus serve`
-- `create` creates a local platform workspace without changing the active workspace
-- `switch` accepts a workspace slug or exact display name
-- `rename` changes the display name but keeps the slug stable
-- `list` marks the active workspace with `*` and shows channel, agent, and human counts
-- switching applies to the running server immediately
-
-**Mutates:** yes for `create`, `switch`, and `rename`; no for `current` and `list`.
-
----
-
-### `chorus check`
-
-Read-only environment diagnostic. Reports runtime installation/auth status, data-directory health, and shared MCP bridge reachability without modifying anything.
-
-```bash
-chorus check
-chorus check --data-dir /custom/path
-```
-
-**Sections:**
-
-| Section | Checks |
-|---------|--------|
-| **Runtimes** | Auth probe via `RuntimeDriver::probe()` + version via `--version` |
-| **Data** | `config.toml`, `data/`, `logs/`, `agents/`, `chorus.db`, `machine_id` |
-| **Bridge** | Discovery file health + HTTP `GET /health` |
-
-**State glyphs:**
-
-| Glyph | Meaning |
-|-------|---------|
-| `✓` | Present and healthy |
-| `⚠` | Present but needs attention (e.g., not authenticated) |
-| `✗` | Present but broken (e.g., unreadable config) |
-| `○` | Missing — normal if not installed or not initialized |
-
-**Mutates:** no. Returns 0 unless an internal bug causes a panic.
-
----
-
-### `chorus start`
-
-Starts the Chorus backend server and opens the web UI in a browser.
-
-```bash
-chorus start --port 3001
-chorus start --port 3001 --no-open       # skip browser
-chorus start --bridge-port 4321          # custom MCP bridge port
-```
-
-This is the recommended way to run Chorus locally. It is an alias for `serve` with auto-open enabled.
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--port` | `3001` | HTTP listen port (API + UI) |
+| `--log-dir` | `<data_dir>/logs` | Tracing log root |
+| `--data-dir` | `~/.chorus` | SQLite + agent workspaces |
+| `--template-dir` | from config or `~/agency-agents` | Agent template markdown |
+| `--bridge-port` | `4321` | In-process MCP bridge port |
+| `--open` | off | Open the web UI in the default browser once `/health` is reachable |
 
 **Mutates:** yes (creates/updates SQLite DB, writes bridge discovery file).
 
----
+### Subcommands
 
-### `chorus serve`
+#### `chorus-server setup`
 
-Starts the backend server without opening a browser. Kept for backward compatibility and headless deployments.
-
-```bash
-chorus serve --port 3001
-chorus serve --port 3001 --bridge-port 4321
-```
-
-**What it starts:**
-- HTTP API on `:port`
-- WebSocket realtime stream on `:port/internal`
-- Shared MCP bridge in-process on `:bridge-port`
-- Auto-restores previously-active agents from SQLite
-
-**Mutates:** yes.
-
----
-
-### `chorus bridge-serve`
-
-Runs the shared MCP bridge as a standalone HTTP server. Useful when you want the bridge on a different host/port from the main Chorus server.
+First-run initializer. Detects installed AI runtimes, probes auth status, writes `config.toml`, creates the data directory layout, creates a local workspace.
 
 ```bash
-chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
+chorus-server setup
+chorus-server setup --yes                    # non-interactive, accept defaults
+chorus-server setup --data-dir /custom/path  # override default ~/.chorus
 ```
 
-**Mutates:** yes (writes `~/.chorus/bridge.json` discovery file).
+#### `chorus-server workspace`
+
+Manage platform workspaces.
+
+```bash
+chorus-server workspace current
+chorus-server workspace list
+chorus-server workspace create "Side Project"
+chorus-server workspace switch side-project
+chorus-server workspace rename "Side Project AI"
+```
+
+Talks to the running server; start it first with `chorus-server` (no subcommand).
+
+#### `chorus-server check`
+
+Read-only environment diagnostic. Reports runtime installation/auth status, data-directory health, and shared MCP bridge reachability.
+
+```bash
+chorus-server check
+chorus-server check --data-dir /custom/path
+```
+
+#### `chorus-server bridge-serve`
+
+Run the shared MCP bridge as a standalone HTTP server (useful when you want it on a different host/port).
+
+```bash
+chorus-server bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
+```
+
+#### `chorus-server status`, `send`, `agent`, `channel`
+
+All talk to a running server over HTTP.
+
+```bash
+chorus-server status --server-url http://localhost:3001
+chorus-server send "#general" "Hello agents"
+chorus-server agent create my-agent --runtime claude
+chorus-server channel list
+```
+
+#### `chorus-server login` / `logout`
+
+Manage the local CLI bearer token in `~/.chorus/credentials.toml`.
+
+```bash
+chorus-server login --local
+chorus-server logout
+```
 
 ---
 
-### `chorus status`
+## `bridge`
 
-Lists channels, agents, and humans by querying the running Chorus server.
-
-```bash
-chorus status --server-url http://localhost:3001
-```
-
----
-
-### `chorus send`
-
-Sends a message as the human user.
+Connects a local agent runtime to a remote `chorus-server` over WebSocket. The happy path is zero-arg:
 
 ```bash
-chorus send "#general" "Hello agents"
-chorus send "dm:@claude" "Can you review this?"
+bridge
 ```
 
----
+Reads `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (written by the Settings → Devices one-liner on the platform), dials the platform, and hosts agents the platform owns for this machine.
 
-### `chorus agent`
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--data-dir` | `$XDG_DATA_HOME/chorus/bridge` | Where `bridge-credentials.toml` lives; logs land in `<data_dir>/logs`. |
 
-Create and manage agents via the running server.
+**Onboarding flow:**
+1. On the platform: open Settings → Devices → mint or rotate a token.
+2. Copy the displayed one-liner, paste into a terminal on the device.
+3. The script writes `bridge-credentials.toml` and `exec`s `bridge`.
 
-```bash
-chorus agent create my-agent --runtime claude
-chorus agent stop my-agent
-chorus agent list
-```
-
----
-
-### `chorus channel`
-
-Manage channels (create, delete, join, list, history).
-
-```bash
-chorus channel list
-chorus channel create my-channel
-chorus channel delete my-channel
-chorus channel history my-channel
-```
+**Mutates:** writes `bridge-credentials.toml` (machine_id persisted on first connect) and `<data_dir>/logs/`.
 
 ---
 
@@ -181,30 +125,33 @@ chorus channel history my-channel
 
 ### Data directory
 
-Most commands accept `--data-dir` to override the default `~/.chorus`. The bridge discovery file (`~/.chorus/bridge.json`) is always global regardless of `--data-dir` — the bridge is a singleton.
+`chorus-server` accepts `--data-dir` to override the default `~/.chorus`. The bridge discovery file (`~/.chorus/bridge.json`) is always global regardless — the in-process bridge is a singleton per platform process.
 
 ### Logging
 
-- `setup`, `start`, `serve`, and the default server case initialize file logging to `~/.chorus/logs/`.
-- All other commands (`check`, `status`, `send`, `channel`, `agent`, `bridge-serve`) log to stdout only.
+- `chorus-server` (run mode and `setup`) initializes file logging at `--log-dir` (default `<data_dir>/logs`).
+- `bridge` logs to stdout + `<data_dir>/logs/`.
+- Admin subcommands (`check`, `status`, `send`, `channel`, `agent`, `bridge-serve`) log to stdout only.
 
 ### Environment variables
 
 | Variable | Affected commands | Purpose |
-|----------|-------------------|---------|
+| --- | --- | --- |
 | `RUST_BACKTRACE` | all | Set to `1` by default for panic diagnostics |
-| `CHORUS_TEMPLATE_DIR` | `setup`, `start`, `serve` | Override agent template directory |
-| `HOME` | all | Used to resolve `~/.chorus` default |
+| `CHORUS_TEMPLATE_DIR` | `chorus-server`, `setup` | Override agent template directory |
+| `CHORUS_DEV_AUTH` / `CHORUS_DEV_AUTH_USERS` | `chorus-server` | Enable the dev-auth provider on multi-user deployments |
+| `HOME`, `XDG_DATA_HOME` | all | Used to resolve `~/.chorus` and the bridge data dir |
 
 ---
 
 ## Exit codes
 
 | Command | 0 | non-zero |
-|---------|---|----------|
-| `setup` | Success | Setup failed (I/O error, parse failure) |
-| `check` | Always | Only if internal panic or I/O failure |
-| `start` / `serve` | Clean shutdown | Port in use, DB error, etc. |
+| --- | --- | --- |
+| `chorus-server setup` | Success | Setup failed (I/O error, parse failure) |
+| `chorus-server check` | Always | Only if internal panic or I/O failure |
+| `chorus-server` (run mode) | Clean shutdown | Port in use, DB error, etc. |
+| `bridge` | Clean shutdown | `2` = terminal auth error (kicked / token revoked); `1` = other |
 | `send` / `status` | Success | Server unreachable, HTTP error |
 
 ---

@@ -228,7 +228,7 @@ fn atomic_write_0600(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
-    use chorus::bridge::client;
+    use crate::bridge::client;
 
     let data_dir = PathBuf::from(&data_dir_str);
     let data_subdir = data_dir.join("data");
@@ -264,7 +264,7 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
     let (platform_http, platform_ws) = derive_urls(&creds.host);
 
     let db_path = data_subdir.join("chorus-bridge.db");
-    let store = Arc::new(chorus::store::Store::open_for_bridge(
+    let store = Arc::new(crate::store::Store::open_for_bridge(
         db_path.to_str().unwrap(),
     )?);
 
@@ -287,7 +287,7 @@ pub async fn run(data_dir_str: String) -> anyhow::Result<()> {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Some(terminal) =
-                err.downcast_ref::<chorus::bridge::client::BridgeTerminalError>()
+                err.downcast_ref::<crate::bridge::client::BridgeTerminalError>()
             {
                 eprintln!("\n{terminal}\n");
                 std::process::exit(2);

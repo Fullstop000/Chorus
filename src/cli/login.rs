@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::{credentials, default_data_dir, CliError};
-use chorus::store::Store;
+use crate::store::Store;
 
 const DATA_SUBDIR: &str = "data";
 
@@ -71,7 +71,7 @@ pub fn mint_local_bridge_credentials(
     credentials::bridge_save(data_dir, &creds)
 }
 
-fn local_account(store: &Store) -> Result<chorus::store::auth::Account> {
+fn local_account(store: &Store) -> Result<crate::store::auth::Account> {
     let account = store
         .get_local_account()?
         .ok_or_else(|| CliError("no local account; run `chorus setup` first".into()))?;
