@@ -23,7 +23,7 @@ async fn run_workspace(server_url: &str, args: &[&str]) -> std::process::Output 
     let server_url = server_url.to_string();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_chorus-server"))
+        Command::new(env!("CARGO_BIN_EXE_chorus"))
             .arg("workspace")
             .args(&args)
             .arg("--server-url")

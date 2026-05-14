@@ -24,7 +24,7 @@ async fn start_fixture() -> String {
 async fn run_agent(args: &[&str]) -> std::process::Output {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_chorus-server"))
+        Command::new(env!("CARGO_BIN_EXE_chorus"))
             .arg("agent")
             .args(&args)
             .env("RUST_LOG", "chorus=info")

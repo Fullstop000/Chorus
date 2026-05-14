@@ -54,7 +54,7 @@ async fn start_fixture() -> String {
 async fn run_channel(args: &[&str]) -> std::process::Output {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_chorus-server"))
+        Command::new(env!("CARGO_BIN_EXE_chorus"))
             .arg("channel")
             .args(&args)
             .env("RUST_LOG", "chorus=info")
@@ -267,7 +267,7 @@ async fn channel_list_server_unreachable() {
     ]
     .to_vec();
     let out = tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_chorus-server"))
+        Command::new(env!("CARGO_BIN_EXE_chorus"))
             .arg("channel")
             .args(&args)
             .env("RUST_LOG", "chorus=info")

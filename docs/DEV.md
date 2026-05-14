@@ -63,17 +63,7 @@ See `ui/vite.config.ts` for the proxy configuration.
 **Shared MCP bridge:**
 
 `chorus-server` starts the shared bridge in-process automatically (default port 4321,
-configurable via `--bridge-port`). You don't need to run anything extra. If you want
-to run the bridge standalone:
-
-```bash
-chorus-server bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
-```
-
-```bash
-# Verify the bridge layer works (no Chorus server required)
-chorus bridge-smoke-test
-```
+configurable via `--bridge-port`). You don't need to run anything extra.
 
 See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
 guide.
@@ -138,12 +128,11 @@ the platform/bridge ownership split.
 See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
 
 ```bash
-chorus-server setup                       # first-run initializer
-chorus-server check                       # read-only environment diagnostic
+chorus setup                              # first-run initializer (local operator CLI)
+chorus check                              # read-only environment diagnostic
 chorus-server --port 3001                 # run the server (HTTP API + embedded UI)
-chorus-server --port 3001 --open          # also open the web UI in a browser
 bridge                                    # remote agent runtime (reads bridge-credentials.toml)
-chorus-server bridge-serve ...            # standalone MCP bridge (in-process by default)
+chorus agent create my-agent              # admin action — hits the running server's HTTP API
 ```
 
 ---

@@ -1,8 +1,6 @@
-use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
 use tokio_util::sync::CancellationToken;
 
 use axum::extract::{Request, State};
@@ -142,59 +140,3 @@ pub fn build_bridge_router(
     (app, ct)
 }
 
-/// Start the shared bridge HTTP server.
-///
-/// Agents connect via `http://<listen_addr>/mcp` with the `X-Agent-Id` header.
-pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::Result<()> {
-    let (app, ct) = build_bridge_router(server_url, None);
-
-    // Resolve listen_addr before binding so we can reject non-loopback addresses
-    // without ever opening a listening socket on them.
-    let resolved: Vec<std::net::SocketAddr> = listen_addr
-        .to_socket_addrs()
-        .with_context(|| format!("invalid listen address: {}", listen_addr))?
-        .collect();
-    if resolved.is_empty() {
-        anyhow::bail!("listen address {} resolved to no sockets", listen_addr);
-    }
-    // The MCP bridge has no authentication beyond the loopback bind — refuse to
-    // expose it beyond localhost. Cross-machine MCP must go through `chorus
-    // bridge`, which proxies tool-calls over the authenticated WS upgrade.
-    for addr in &resolved {
-        if !addr.ip().is_loopback() {
-            anyhow::bail!(
-                "Bridge refuses to bind to non-loopback address {}. The MCP bridge has no authentication; \
-                 only localhost binds are supported. For cross-machine, use `chorus bridge` instead.",
-                addr
-            );
-        }
-    }
-
-    let listener = tokio::net::TcpListener::bind(&resolved[..]).await?;
-    let port = listener.local_addr()?.port();
-
-    // Write discovery info so drivers can find this bridge.
-    crate::bridge::discovery::write_bridge_info(&crate::bridge::discovery::BridgeInfo {
-        port,
-        pid: std::process::id(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-    })?;
-    // Guard ensures the discovery file is removed on every exit path —
-    // normal shutdown, early error return, or panic.
-    let _discovery_guard = crate::bridge::discovery::DiscoveryGuard;
-
-    tracing::info!(port, "bridge server listening");
-
-    // Graceful shutdown on ctrl-c.
-    let ct_shutdown = ct.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        ct_shutdown.cancel();
-    });
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { ct.cancelled().await })
-        .await?;
-
-    Ok(())
-}

@@ -122,11 +122,11 @@ if [ "$WIPED_DATA" = true ]; then
 else
   echo -e "${YELLOW}▶ Ensuring Chorus setup is initialized...${RESET}"
 fi
-"$ROOT/target/debug/chorus-server" setup 2>/dev/null || \
-  cargo run --bin chorus-server --quiet -- setup
+"$ROOT/target/debug/chorus" setup 2>/dev/null || \
+  cargo run --bin chorus --quiet -- setup
 
-# ── Build Rust binary if needed ──
-echo -e "${YELLOW}▶ Building chorus-server...${RESET}"
+# ── Build Rust binaries if needed ──
+echo -e "${YELLOW}▶ Building chorus binaries...${RESET}"
 cd "$ROOT"
 cargo build 2>&1 | grep -E "^error|Compiling chorus|Finished" || true
 
