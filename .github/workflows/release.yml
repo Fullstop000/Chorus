@@ -1,0 +1,63 @@
+name: Release Binaries
+
+# Triggers on tag push (`v*`). The `workflow_dispatch` path lets you
+# rebuild artifacts for an already-existing tag (e.g. after a runner
+# flake) without needing a new tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (must already exist, e.g. v0.0.12.0)'
+        required: true
+
+jobs:
+  release:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      # Don't cancel siblings on first failure — we want every target
+      # we can ship, even if one is flaking.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build embedded UI bundle
+        # `chorus-server` embeds `ui/dist/` via `rust-embed`; the
+        # bundle must exist on disk before cargo build runs.
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: chorus,chorus-server
+          target: ${{ matrix.target }}
+          archive: chorus-$tag-$target
+          tar: unix
+          zip: none
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
