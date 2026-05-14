@@ -5,7 +5,8 @@
 
 mod local_store;
 mod reconcile;
-mod ws;
+pub mod ws;
+pub use ws::BridgeTerminalError;
 
 use std::path::PathBuf;
 use std::sync::Arc;

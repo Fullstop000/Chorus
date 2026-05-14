@@ -42,8 +42,16 @@ async fn serve_ui(uri: Uri) -> Response {
     }
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// Liveness probe. Cheap, no auth. Reports `dev_auth: true` when the
+/// `CHORUS_DEV_AUTH` flag is set so external watchdogs can alert if the
+/// flag stays on past expected windows.
+async fn health(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "dev_auth": state.dev_auth.enabled,
+    }))
 }
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
@@ -104,6 +112,15 @@ pub fn build_router_with_services(
         );
     }
 
+    // Dev-auth config: read from env. Refuse-to-start (empty allowlist)
+    // is enforced in `cli::serve` BEFORE this builder runs, so an
+    // `Err` here would be a programming error — unwrap with a clear
+    // panic.
+    let dev_auth = Arc::new(
+        crate::server::auth::dev_login::load_dev_auth_config()
+            .expect("dev-auth config; cli::serve must refuse-to-start before reaching here"),
+    );
+
     let state = AppState {
         store,
         event_bus,
@@ -116,6 +133,7 @@ pub fn build_router_with_services(
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
         templates: Arc::new(templates),
         bridge_registry: bridge_registry::BridgeRegistry::new(),
+        dev_auth,
     };
 
     // Spawn a single forwarder task that subscribes once to the event
@@ -232,6 +250,14 @@ pub fn build_router_with_services(
             get(handle_list_channels).post(handle_create_channel),
         )
         .route("/agents", get(handle_list_agents).post(handle_create_agent))
+        // Settings → Devices: user-scoped bridge token onboarding.
+        .route("/devices", get(devices::handle_list_devices))
+        .route("/devices/mint", post(devices::handle_mint_device))
+        .route("/devices/rotate", post(devices::handle_rotate_device))
+        .route(
+            "/devices/{machine_id}",
+            delete(devices::handle_delete_device),
+        )
         .route("/runtimes", get(handle_list_runtime_statuses))
         .route(
             "/runtimes/{runtime}/models",
@@ -315,10 +341,13 @@ pub fn build_router_with_services(
     // These are siblings of `api_router`; they bypass `require_auth`
     // entirely. The handlers (or their dedicated middleware) decide
     // what to accept.
-    let api_open_router = Router::new()
+    let mut api_open_router = Router::new()
         .route("/auth/local-session", post(auth::handle_local_session))
         .route("/bridge/ws", get(handle_bridge_ws))
         .route("/events/ws", get(handle_events_ws));
+    if state.dev_auth.enabled {
+        api_open_router = api_open_router.route("/auth/dev-login", post(auth::handle_dev_login));
+    }
 
     Router::new()
         .route("/health", get(health))

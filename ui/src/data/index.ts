@@ -176,3 +176,16 @@ export {
   type WorkspaceMode,
   type DeleteWorkspaceResponse,
 } from './workspaces'
+
+export {
+  listDevices,
+  mintDevice,
+  rotateDevice,
+  kickDevice,
+  forgetDevice,
+  getHealth,
+  type Device,
+  type DevicesList,
+  type MintResponse,
+  type HealthInfo,
+} from './devices'

@@ -25,7 +25,23 @@ import { queryClient as appQueryClient } from "./lib/queryClient";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
 import { ToastRegion } from "./components/chat/ToastRegion";
+import { getHealth } from "./data";
 import type { AgentInfo } from "./data";
+
+function DevAuthBanner() {
+  const { data } = useQuery({
+    queryKey: ["health"],
+    queryFn: () => getHealth(),
+    refetchInterval: 60_000,
+    staleTime: 60_000,
+  });
+  if (!data?.dev_auth) return null;
+  return (
+    <div className="dev-auth-banner" role="alert">
+      Dev auth enabled — access-controlled by network reachability only.
+    </div>
+  );
+}
 
 function GlobalToasts() {
   const toasts = useStore((s) => s.toasts);
@@ -331,6 +347,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <DevAuthBanner />
       <Sidebar />
       <MainPanel />
       <GlobalToasts />

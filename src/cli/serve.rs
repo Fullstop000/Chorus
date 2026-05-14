@@ -36,6 +36,20 @@ pub async fn run(
     let store = Arc::new(Store::open(db_path.to_str().unwrap())?);
     let event_bus = Arc::new(EventBus::new());
 
+    // Refuse-to-start: dev-auth must have a non-empty allowlist OR be
+    // disabled outright. An empty allowlist is always a misconfiguration.
+    // Validate up front so callers see a clear message instead of a
+    // panic from inside the router builder.
+    let dev_auth_cfg = chorus::server::auth::dev_login::load_dev_auth_config()
+        .map_err(|msg| anyhow::anyhow!("{msg}"))?;
+    if dev_auth_cfg.enabled {
+        tracing::warn!(
+            users = ?dev_auth_cfg.allowed_users,
+            "dev auth enabled — this install is access-controlled by network reachability only. \
+             Set CHORUS_DEV_AUTH=0 (or unset it) before opening the host to the public internet."
+        );
+    }
+
     // The local human (id + name) is resolved during `build_router_with_services`
     // from `ChorusConfig::local_human` or, on first run, by inserting a row keyed
     // by a freshly generated `human_<uuid>` id. Built-in channels and `#all`

@@ -65,8 +65,8 @@ pub fn ensure_default_test_identity(store: &Store) {
     let account_id = format!("acc_{}", TEST_USER_ID);
     let token_hash = hash_token(TEST_AUTH_TOKEN);
     conn.execute(
-        "INSERT OR IGNORE INTO api_tokens (token_hash, account_id, label)
-         VALUES (?1, ?2, 'harness-default')",
+        "INSERT OR IGNORE INTO api_tokens (token_hash, account_id, provider, label)
+         VALUES (?1, ?2, 'local', 'harness-default')",
         params![token_hash, account_id],
     )
     .ok();
@@ -248,8 +248,8 @@ where
         for (raw, machine) in pairs {
             let token_hash = hash_token(raw.as_ref());
             conn.execute(
-                "INSERT OR IGNORE INTO api_tokens (token_hash, account_id, machine_id, label)
-                 VALUES (?1, ?2, ?3, 'test-bridge')",
+                "INSERT OR IGNORE INTO api_tokens (token_hash, account_id, provider, machine_id, label)
+                 VALUES (?1, ?2, 'bridge', ?3, 'test-bridge')",
                 params![token_hash, account_id, machine.as_ref()],
             )
             .ok();

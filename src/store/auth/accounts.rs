@@ -101,6 +101,32 @@ impl Store {
         .map_err(Into::into)
     }
 
+    /// Look up an account by `(auth_provider, email)`. Used by login flows
+    /// that don't have an account id in hand yet (dev-login, future OAuth).
+    pub fn find_account_by_provider_email(
+        &self,
+        auth_provider: &str,
+        email: &str,
+    ) -> Result<Option<Account>> {
+        let conn = self.lock_conn();
+        Self::find_account_by_provider_email_inner(&conn, auth_provider, email)
+    }
+
+    pub(crate) fn find_account_by_provider_email_inner(
+        conn: &Connection,
+        auth_provider: &str,
+        email: &str,
+    ) -> Result<Option<Account>> {
+        conn.query_row(
+            "SELECT id, user_id, auth_provider, email, disabled_at, created_at
+             FROM accounts WHERE auth_provider = ?1 AND email = ?2",
+            params![auth_provider, email],
+            Self::account_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub fn list_accounts_for_user(&self, user_id: &str) -> Result<Vec<Account>> {
         let conn = self.lock_conn();
         let rows = conn

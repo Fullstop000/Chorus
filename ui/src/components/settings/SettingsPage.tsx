@@ -17,11 +17,19 @@ import { Input } from '@/components/ui/input'
 import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
 import './SettingsPage.css'
+import { DevicesSection } from './DevicesSection'
 
-type SettingsSection = 'profile' | 'workspaces' | 'appearance' | 'system' | 'logs'
+type SettingsSection =
+  | 'profile'
+  | 'devices'
+  | 'workspaces'
+  | 'appearance'
+  | 'system'
+  | 'logs'
 
 const NAV_ITEMS: { id: SettingsSection; label: string }[] = [
   { id: 'profile', label: 'Profile' },
+  { id: 'devices', label: 'Devices' },
   { id: 'workspaces', label: 'Workspaces' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'system', label: 'System' },
@@ -560,6 +568,7 @@ export function SettingsPage() {
 
         <div className="settings-content">
           {activeSection === 'profile' && <ProfileSection humanId={currentUserId} name={currentUser} />}
+          {activeSection === 'devices' && <DevicesSection />}
           {activeSection === 'workspaces' && <WorkspaceSection />}
           {activeSection === 'appearance' && <AppearanceSection />}
           {activeSection === 'system' && <SystemSection />}

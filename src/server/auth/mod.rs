@@ -14,7 +14,9 @@
 //!   in subsequent commits. Removed once every handler reads from the
 //!   request extension.
 
+pub mod dev_login;
 pub mod local_session;
+pub use dev_login::handle_dev_login;
 pub use local_session::handle_local_session;
 
 use axum::body::Body;

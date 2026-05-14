@@ -17,13 +17,19 @@ use crate::store::{parse_datetime, Store};
 
 /// Row in `api_tokens`. Never carries the raw token.
 ///
-/// `machine_id == None` ⇒ CLI token (acts as its `account_id`'s User).
-/// `machine_id == Some(_)` ⇒ bridge token (additionally restricted to
-/// agents whose `agents.machine_id` matches).
+/// Three valid `(provider, machine_id)` shapes:
+///   `("local",  None)`   — CLI bearer; acts as its `account_id`'s User.
+///   `("bridge", Some(_))` — Legacy per-machine bridge token; restricted
+///                           to agents whose `agents.machine_id` matches.
+///   `("bridge", None)`   — User-scoped bridge token (one per user,
+///                           shared across that user's machines). Each
+///                           connection's machine_id comes from
+///                           `bridge.hello`; see `bridge_machines`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiToken {
     pub token_hash: String,
     pub account_id: String,
+    pub provider: String,
     pub machine_id: Option<String>,
     pub label: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -72,9 +78,10 @@ impl Store {
         Self::mint_token_inner(&conn, account_id, provider, None, label)
     }
 
-    /// Mint a bridge token bound to an Account *and* a `machine_id`.
-    /// The auth layer additionally enforces that the token only acts on
-    /// agents whose `agents.machine_id` matches.
+    /// Mint a legacy bridge token bound to an Account *and* a `machine_id`.
+    /// The auth layer enforces that the token only acts on agents whose
+    /// `agents.machine_id` matches. Kept for pre-PRD installs and the
+    /// `chorus setup --yes` local-install path.
     pub fn mint_bridge_token(
         &self,
         account_id: &str,
@@ -83,6 +90,18 @@ impl Store {
     ) -> Result<MintedToken> {
         let conn = self.lock_conn();
         Self::mint_token_inner(&conn, account_id, "bridge", Some(machine_id), label)
+    }
+
+    /// Mint a user-scoped bridge token (`provider='bridge', machine_id=NULL`).
+    /// One per user; the machine_id of each live connection comes from
+    /// `bridge.hello` and is tracked in `bridge_machines`.
+    pub fn mint_user_bridge_token(
+        &self,
+        account_id: &str,
+        label: Option<&str>,
+    ) -> Result<MintedToken> {
+        let conn = self.lock_conn();
+        Self::mint_token_inner(&conn, account_id, "bridge", None, label)
     }
 
     pub(crate) fn mint_token_inner(
@@ -98,9 +117,9 @@ impl Store {
         let raw = generate_raw_token(provider);
         let token_hash = hash_token(&raw);
         conn.execute(
-            "INSERT INTO api_tokens (token_hash, account_id, machine_id, label)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![token_hash, account_id, machine_id, label],
+            "INSERT INTO api_tokens (token_hash, account_id, provider, machine_id, label)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![token_hash, account_id, provider, machine_id, label],
         )?;
         let row = Self::get_token_by_hash_inner(conn, &token_hash)?
             .ok_or_else(|| anyhow::anyhow!("token not found after insert"))?;
@@ -148,6 +167,18 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Revoke a token by its hash (the device-rotate path can't recover
+    /// the raw — only the hash row is reachable). Idempotent.
+    pub fn revoke_token_by_hash(&self, token_hash: &str) -> Result<bool> {
+        let conn = self.lock_conn();
+        let affected = conn.execute(
+            "UPDATE api_tokens SET revoked_at = datetime('now')
+             WHERE token_hash = ?1 AND revoked_at IS NULL",
+            params![token_hash],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Public lookup by SHA-256 hash. Returns the row without any
     /// validity checks (caller decides what's acceptable).
     pub fn get_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
@@ -163,7 +194,7 @@ impl Store {
     pub fn has_any_bridge_token(&self) -> Result<bool> {
         let conn = self.lock_conn();
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM api_tokens WHERE machine_id IS NOT NULL",
+            "SELECT COUNT(*) FROM api_tokens WHERE provider = 'bridge'",
             [],
             |row| row.get(0),
         )?;
@@ -174,7 +205,7 @@ impl Store {
         let conn = self.lock_conn();
         let rows = conn
             .prepare(
-                "SELECT token_hash, account_id, machine_id, label, created_at, last_used_at, revoked_at
+                "SELECT token_hash, account_id, provider, machine_id, label, created_at, last_used_at, revoked_at
                  FROM api_tokens WHERE account_id = ?1 ORDER BY created_at",
             )?
             .query_map(params![account_id], Self::token_from_row)?
@@ -183,12 +214,33 @@ impl Store {
         Ok(rows)
     }
 
+    /// Find the active user-scoped bridge token for an account, if any.
+    /// Used by the device-onboarding mint route: returns `None` for "OK,
+    /// mint a fresh one"; `Some(_)` for "already minted, force Rotate."
+    pub fn find_active_user_bridge_token(&self, account_id: &str) -> Result<Option<ApiToken>> {
+        let conn = self.lock_conn();
+        conn.query_row(
+            "SELECT token_hash, account_id, provider, machine_id, label, created_at, last_used_at, revoked_at
+             FROM api_tokens
+             WHERE account_id = ?1
+               AND provider = 'bridge'
+               AND machine_id IS NULL
+               AND revoked_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![account_id],
+            Self::token_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub(crate) fn get_token_by_hash_inner(
         conn: &Connection,
         token_hash: &str,
     ) -> Result<Option<ApiToken>> {
         conn.query_row(
-            "SELECT token_hash, account_id, machine_id, label, created_at, last_used_at, revoked_at
+            "SELECT token_hash, account_id, provider, machine_id, label, created_at, last_used_at, revoked_at
              FROM api_tokens WHERE token_hash = ?1",
             params![token_hash],
             Self::token_from_row,
@@ -198,14 +250,15 @@ impl Store {
     }
 
     fn token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiToken> {
-        let last_used_raw: Option<String> = row.get(5)?;
-        let revoked_raw: Option<String> = row.get(6)?;
+        let last_used_raw: Option<String> = row.get(6)?;
+        let revoked_raw: Option<String> = row.get(7)?;
         Ok(ApiToken {
             token_hash: row.get(0)?,
             account_id: row.get(1)?,
-            machine_id: row.get(2)?,
-            label: row.get(3)?,
-            created_at: parse_datetime(&row.get::<_, String>(4)?),
+            provider: row.get(2)?,
+            machine_id: row.get(3)?,
+            label: row.get(4)?,
+            created_at: parse_datetime(&row.get::<_, String>(5)?),
             last_used_at: last_used_raw.as_deref().map(parse_datetime),
             revoked_at: revoked_raw.as_deref().map(parse_datetime),
         })
