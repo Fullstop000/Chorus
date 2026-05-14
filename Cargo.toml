@@ -26,7 +26,15 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "1"
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+# `default-features = false` drops reqwest's default-tls (native-tls →
+# openssl-sys), which breaks musl builds (no system OpenSSL). Pin
+# rustls-tls so the chorus binary stays self-contained: works on
+# x86_64-/aarch64-unknown-linux-musl without `apt install libssl-dev`,
+# and lines up with tokio-tungstenite's `rustls-tls-webpki-roots`
+# feature already used by `chorus bridge`. `http2` and `charset` are
+# re-added from reqwest's defaults — chorus uses chunked HTTP bodies
+# and JSON character-encoded responses.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "http2", "charset"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
