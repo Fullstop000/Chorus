@@ -84,13 +84,11 @@ Run them in two terminals (or two machines):
 # Platform — terminal 1
 chorus-server --port 4101 --data-dir /tmp/chorus-platform
 
-# Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds)
-bridge \
-  --platform-ws ws://127.0.0.1:4101/api/bridge/ws \
-  --platform-http http://127.0.0.1:4101 \
-  --machine-id m-1 \
-  --data-dir /tmp/chorus-bridge \
-  --bridge-listen 127.0.0.1:5455
+# Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds).
+# Mint a bridge token from the platform's Settings → Devices first; paste
+# the one-liner it generates. The bridge reads host + token from
+# $XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml.
+chorus bridge --data-dir /tmp/chorus-bridge
 ```
 
 Create an agent and bind it to the bridge by setting `machineId`:
@@ -106,17 +104,9 @@ the runtime locally and starts streaming `agent.state` upstream. Sending a
 chat to `@alice` reaches the bridge over WS, the bridge wakes the runtime,
 and the agent's `mcp__chat__send_message` reply lands back on the platform.
 
-For production deployments, secure the WS upgrade with bearer tokens:
-
-```bash
-# On the platform process:
-export CHORUS_BRIDGE_TOKENS="secret-for-m1:m-1,secret-for-m2:m-2"
-chorus-server --port 4101
-
-# On each bridge:
-export CHORUS_BRIDGE_TOKEN=secret-for-m1
-bridge --platform-ws wss://platform.example/api/bridge/ws ...
-```
+For production deployments, the WS upgrade is bearer-protected via the
+per-user bridge tokens minted in Settings → Devices. The token lives in
+the device's `bridge-credentials.toml`; no env-var wiring required.
 
 `tokio-tungstenite` is built with the `rustls-tls-webpki-roots` feature
 so `wss://` works out of the box. See `docs/plan/bridge-platform-protocol.md`
@@ -128,10 +118,10 @@ the platform/bridge ownership split.
 See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
 
 ```bash
-chorus setup                              # first-run initializer (local operator CLI)
+chorus setup                              # first-run initializer (local CLI)
 chorus check                              # read-only environment diagnostic
 chorus-server --port 3001                 # run the server (HTTP API + embedded UI)
-bridge                                    # remote agent runtime (reads bridge-credentials.toml)
+chorus bridge                             # remote agent runtime (reads bridge-credentials.toml)
 chorus agent create my-agent              # admin action — hits the running server's HTTP API
 ```
 

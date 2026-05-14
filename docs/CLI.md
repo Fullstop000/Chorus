@@ -1,10 +1,9 @@
 # Chorus CLI Reference
 
-Three binaries, by concern:
+Two binaries, by location:
 
-- `chorus-server` — platform server daemon. HTTP API + WebSocket bridge + embedded UI in one process. No subcommands. Deploy on a host (laptop or VM).
-- `bridge` — per-machine bridge daemon. Hosts local agent runtimes against a remote `chorus-server`.
-- `chorus` — local operator CLI. Talks to a running `chorus-server` over HTTP. Admin actions live here.
+- `chorus-server` — server-side daemon. HTTP API + WebSocket bridge + embedded UI in one process. No subcommands. Deploys on a host (laptop or VM).
+- `chorus` — device-side binary. Operator CLI (`chorus setup`, `chorus agent create`, …) plus the long-running bridge daemon (`chorus bridge`).
 
 ---
 
@@ -32,15 +31,20 @@ chorus-server --bridge-port 4321                     # custom in-process MCP bri
 
 ---
 
-## `bridge`
+## `chorus` — device-side binary
 
-Connects a local agent runtime to a remote `chorus-server` over WebSocket. The happy path is zero-arg:
+Two roles on the same binary:
+
+- **Operator CLI** — `chorus setup`, `chorus agent create`, `chorus send`, etc. One-shot HTTP clients against a running `chorus-server`. Logs to stdout.
+- **Bridge daemon** — `chorus bridge`. Long-running. Hosts agent runtimes for a remote platform.
+
+### `chorus bridge`
 
 ```bash
-bridge
+chorus bridge
 ```
 
-Reads `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (written by the Settings → Devices one-liner on the platform), dials the platform, and hosts agents the platform owns for this machine.
+Reads `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (written by the Settings → Devices one-liner on the platform), dials the platform's `/api/bridge/ws`, and hosts agents the platform owns for this machine.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
@@ -49,15 +53,11 @@ Reads `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (written by the Set
 **Onboarding flow:**
 1. On the platform: open Settings → Devices → mint or rotate a token.
 2. Copy the displayed one-liner, paste into a terminal on the device.
-3. The script writes `bridge-credentials.toml` and `exec`s `bridge`.
+3. The script writes `bridge-credentials.toml` and `exec`s `chorus bridge`.
 
 **Mutates:** writes `bridge-credentials.toml` (machine_id persisted on first connect) and `<data_dir>/logs/`.
 
----
-
-## `chorus` — operator CLI
-
-Talks to a running `chorus-server` over HTTP. Logs to stdout only.
+### Operator subcommands
 
 ### `chorus setup`
 
@@ -119,8 +119,9 @@ chorus logout
 ### Logging
 
 - `chorus-server` initializes file logging at `--log-dir` (default `<data_dir>/logs`).
-- `bridge` logs to stdout + `<data_dir>/logs/`.
-- `chorus` logs to stdout only — operator actions are one-shots and write no persistent state. Exception: `chorus setup` routes its own logging into `<data_dir>/logs/` because it touches the on-disk layout.
+- `chorus bridge` logs to stdout + `<bridge data_dir>/logs/`.
+- `chorus setup` logs to stdout + `<data_dir>/logs/` (it touches the on-disk layout, so first-run problems are diagnosable).
+- All other `chorus` subcommands log to stdout only — they're one-shot HTTP clients with no persistent state to file-log.
 
 ### Environment variables
 
@@ -141,7 +142,7 @@ chorus logout
 | `chorus setup` | Success | Setup failed (I/O error, parse failure) |
 | `chorus check` | Always | Only if internal panic or I/O failure |
 | `chorus-server` | Clean shutdown | Port in use, DB error, etc. |
-| `bridge` | Clean shutdown | `2` = terminal auth error (kicked / token revoked); `1` = other |
+| `chorus bridge` | Clean shutdown | `2` = terminal auth error (kicked / token revoked); `1` = other |
 | `chorus send` / `status` / `agent` / `channel` / `workspace` | Success | Server unreachable, HTTP error |
 
 ---

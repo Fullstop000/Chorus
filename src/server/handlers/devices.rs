@@ -329,9 +329,9 @@ fn render_onboarding_script(host: &str, bearer: &str) -> String {
         r#"#!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v bridge >/dev/null 2>&1; then
-  echo 'Install the Chorus bridge first:'
-  echo '  cargo install --git https://github.com/Fullstop000/Chorus --bin bridge'
+if ! command -v chorus >/dev/null 2>&1; then
+  echo 'Install the Chorus CLI first:'
+  echo '  cargo install --git https://github.com/Fullstop000/Chorus --bin chorus'
   exit 1
 fi
 
@@ -344,7 +344,7 @@ token = "{bearer}"
 EOF
 
 printf 'Connecting → %s …\n' "{host}"
-exec bridge
+exec chorus bridge
 "#
     )
 }
@@ -358,8 +358,8 @@ mod tests {
         let s = render_onboarding_script("chorus.test", "chrs_bridge_xyz");
         assert!(s.contains(r#"host  = "chorus.test""#));
         assert!(s.contains(r#"token = "chrs_bridge_xyz""#));
-        assert!(s.contains("exec bridge"));
-        assert!(s.contains("command -v bridge"));
+        assert!(s.contains("exec chorus bridge"));
+        assert!(s.contains("command -v chorus"));
     }
 
     #[test]

@@ -79,7 +79,7 @@ async fn mint_device_returns_script_and_locks_out_second_mint() {
     let body = json_body(resp).await;
     let script = body["script"].as_str().unwrap();
     assert!(script.contains("chrs_bridge_"), "script: {script}");
-    assert!(script.contains("exec bridge"));
+    assert!(script.contains("exec chorus bridge"));
 
     // Second call MUST 410 — the raw bearer is unrecoverable from
     // storage, so the only path to a new script is rotate.

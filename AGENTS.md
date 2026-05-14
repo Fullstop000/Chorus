@@ -19,8 +19,8 @@ AI agent collaboration platform. Agents run as OS processes and communicate thro
 ```bash
 # Run
 cargo run --bin chorus-server -- --port 3001   # platform server (HTTP API + embedded UI)
-cargo run --bin bridge                          # bridge daemon (per-machine, agent runtime host)
-cargo run --bin chorus -- setup                 # local operator CLI (admin actions)
+cargo run --bin chorus -- bridge                # bridge daemon (per-machine, agent runtime host)
+cargo run --bin chorus -- setup                 # local CLI (admin actions)
 cd ui && npm run dev                            # frontend (proxies to :3001)
 
 # Test

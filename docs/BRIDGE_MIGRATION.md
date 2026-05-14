@@ -49,9 +49,9 @@ chorus-server --port 3001 --bridge-port 4400
 
 The in-process bridge is the only supported mode — `chorus-server` always
 starts it, and there is no longer a separate "standalone bridge" binary
-or subcommand. Cross-machine setups use the `bridge` daemon (which
-proxies tool-calls back over the authenticated WS upgrade), not a
-loopback-bound MCP server.
+or subcommand. Cross-machine setups use the `chorus bridge` daemon
+(which proxies tool-calls back over the authenticated WS upgrade), not
+a loopback-bound MCP server.
 
 The bridge writes discovery information to `~/.chorus/bridge.json` so drivers can
 find it automatically:

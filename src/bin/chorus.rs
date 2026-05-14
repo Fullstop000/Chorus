@@ -1,18 +1,27 @@
-//! `chorus` — local operator CLI.
+//! `chorus` — device-side binary.
 //!
-//! Talks to a running `chorus-server` over HTTP. Subcommands cover
-//! first-run setup, agent management, channel/workspace admin, sending
-//! messages, and local credential management. Logs to stdout only —
-//! file logging belongs to the server daemon, not to a one-shot CLI.
+//! Two roles on the same binary:
+//!
+//! 1. Operator CLI: `chorus setup`, `chorus agent create`, `chorus send`,
+//!    etc. One-shot subcommands that hit a running `chorus-server` over
+//!    HTTP. Logs to stdout.
+//!
+//! 2. Bridge daemon: `chorus bridge`. Long-running. Reads
+//!    `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml` (written by
+//!    the Settings → Devices one-liner on the platform), dials the
+//!    platform's `/api/bridge/ws`, and hosts agent runtimes that the
+//!    platform owns for this machine. File-logs into the bridge data
+//!    dir.
 
 use clap::{Parser, Subcommand};
 
 use chorus::cli::{
-    agent, channel, check, login, logout, send, setup, status, workspace, AgentCommands, CliError,
+    agent, bridge, channel, check, login, logout, send, setup, status, workspace, AgentCommands,
+    CliError,
 };
 
 #[derive(Parser)]
-#[command(name = "chorus", about = "Chorus operator CLI")]
+#[command(name = "chorus", about = "Chorus device-side CLI + bridge daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,6 +41,18 @@ enum Commands {
         /// `<data_dir>/config.toml` > `~/agency-agents`.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
+    },
+    /// Run the bridge daemon — connect this machine to a remote
+    /// `chorus-server` over WebSocket and host its agent runtimes
+    /// locally. Zero-arg happy path: reads
+    /// `bridge-credentials.toml` from `$XDG_DATA_HOME/chorus/bridge`.
+    Bridge {
+        /// Override the default data dir (`$XDG_DATA_HOME/chorus/bridge`).
+        /// `bridge-credentials.toml` lives here; logs land in
+        /// `<data_dir>/logs/`. `machine_id` is persisted to the
+        /// credentials file on first connect.
+        #[arg(long)]
+        data_dir: Option<String>,
     },
     /// Create and manage agents
     Agent {
@@ -113,15 +134,19 @@ async fn run() -> anyhow::Result<()> {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
 
-    // `setup` writes config and creates directories under the data dir;
-    // route its logging into `<data_dir>/logs/` so first-run problems are
-    // diagnosable. All other subcommands log to stdout — they're
-    // one-shot HTTP clients with no persistent state to file-log.
+    // File-log for the long-lived `bridge` daemon and for `setup` (which
+    // touches on-disk state). One-shot operator subcommands log to
+    // stdout — they're HTTP clients with no persistent state.
     let log_data_dir = match &cli.command {
         Commands::Setup { data_dir, .. } => Some(
             data_dir
                 .clone()
                 .unwrap_or_else(chorus::cli::default_data_dir),
+        ),
+        Commands::Bridge { data_dir } => Some(
+            data_dir
+                .clone()
+                .unwrap_or_else(bridge::default_bridge_data_dir),
         ),
         _ => None,
     };
@@ -133,6 +158,11 @@ async fn run() -> anyhow::Result<()> {
             data_dir,
             template_dir,
         } => setup::run(yes, data_dir, template_dir).await,
+
+        Commands::Bridge { data_dir } => {
+            let data_dir_str = data_dir.unwrap_or_else(bridge::default_bridge_data_dir);
+            bridge::run(data_dir_str).await
+        }
 
         Commands::Send {
             target,
