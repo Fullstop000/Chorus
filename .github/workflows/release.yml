@@ -1,8 +1,8 @@
 name: Release Binaries
 
-# Triggers on tag push (`v*`). The `workflow_dispatch` path lets you
-# rebuild artifacts for an already-existing tag (e.g. after a runner
-# flake) without needing a new tag.
+# `push` of a `v*` tag is the normal release trigger. `workflow_dispatch`
+# is for re-running an already-existing tag (e.g., recovering from a
+# runner flake) without bumping versions.
 on:
   push:
     tags:
@@ -14,21 +14,23 @@ on:
         required: true
 
 jobs:
-  release:
+  build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
-      # Don't cancel siblings on first failure — we want every target
-      # we can ship, even if one is flaking.
+      # Don't cancel siblings on first failure — ship every target we
+      # can.
       fail-fast: false
       matrix:
         include:
+          # Native compilation for every target — no `cross`, no Docker.
+          # The aarch64-musl box uses a native arm64 runner (GA on
+          # GitHub Actions as of 2025), which removes the cross-compile
+          # toolchain and openssl-on-musl pain entirely.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
             os: macos-13
           - target: aarch64-apple-darwin
@@ -45,19 +47,75 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Build embedded UI bundle
-        # `chorus-server` embeds `ui/dist/` via `rust-embed`; the
-        # bundle must exist on disk before cargo build runs.
+        # `chorus-server` embeds `ui/dist/` via `rust-embed` at compile
+        # time — the bundle must exist on disk before cargo build runs.
         working-directory: ui
         run: |
           npm ci
           npm run build
 
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          bin: chorus,chorus-server
-          target: ${{ matrix.target }}
-          archive: chorus-$tag-$target
-          tar: unix
-          zip: none
-          checksum: sha256
-          token: ${{ secrets.GITHUB_TOKEN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux musl only)
+        # `cc` and `ar` for musl are missing by default on ubuntu
+        # runners. macOS targets compile to Mach-O via Xcode toolchain
+        # and don't need this.
+        if: endsWith(matrix.target, '-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --bin chorus --bin chorus-server
+
+      - name: Package
+        # Per-target stage dir keeps the tarball entries clean
+        # (`chorus`, `chorus-server` at the root of the archive).
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          STAGE="chorus-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${{ matrix.target }}/release/chorus"        "dist/${STAGE}/"
+          cp "target/${{ matrix.target }}/release/chorus-server" "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          ( cd dist && shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256" )
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chorus-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # All four matrix entries upload to distinct artifact names;
+          # merge them into one flat dir so the release-asset glob is
+          # simple.
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -lh dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
