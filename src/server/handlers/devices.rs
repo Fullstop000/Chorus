@@ -329,10 +329,52 @@ fn render_onboarding_script(host: &str, bearer: &str) -> String {
         r#"#!/usr/bin/env bash
 set -euo pipefail
 
+INSTALL_DIR="${{CHORUS_INSTALL_DIR:-$HOME/.local/bin}}"
+REPO="Fullstop000/Chorus"
+
 if ! command -v chorus >/dev/null 2>&1; then
-  echo 'Install the Chorus CLI first:'
-  echo '  cargo install --git https://github.com/Fullstop000/Chorus --bin chorus'
-  exit 1
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64)   TARGET=x86_64-unknown-linux-musl ;;
+    Linux-aarch64)  TARGET=aarch64-unknown-linux-musl ;;
+    Linux-arm64)    TARGET=aarch64-unknown-linux-musl ;;
+    Darwin-arm64)   TARGET=aarch64-apple-darwin ;;
+    Darwin-x86_64)
+      echo 'Intel macOS is not in the release matrix. Install from source:' >&2
+      echo "  cargo install --git https://github.com/$REPO --bin chorus" >&2
+      exit 1
+      ;;
+    *)
+      echo "Unsupported platform: $(uname -s) $(uname -m)" >&2
+      echo "Browse releases: https://github.com/$REPO/releases/latest" >&2
+      exit 1
+      ;;
+  esac
+
+  TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+  if [ -z "$TAG" ]; then
+    echo "Failed to resolve latest release tag from GitHub API." >&2
+    exit 1
+  fi
+
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  URL="https://github.com/$REPO/releases/download/$TAG/chorus-$TAG-$TARGET.tar.gz"
+  echo "Installing chorus $TAG ($TARGET) → $INSTALL_DIR ..."
+  curl -fsSL "$URL" | tar -xz -C "$TMP"
+  # Tarball layout: chorus-$TAG-$TARGET/{{chorus,chorus-server}}; copy
+  # just the device binary out of the staging subdir.
+  mkdir -p "$INSTALL_DIR"
+  mv "$TMP"/*/chorus "$INSTALL_DIR/chorus"
+  chmod +x "$INSTALL_DIR/chorus"
+
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+      echo "Note: $INSTALL_DIR is not in your PATH. Add it to your shell rc to keep using \`chorus\`." >&2
+      export PATH="$INSTALL_DIR:$PATH"
+      ;;
+  esac
 fi
 
 DATA_DIR="${{XDG_DATA_HOME:-$HOME/.local/share}}/chorus/bridge"
@@ -360,6 +402,32 @@ mod tests {
         assert!(s.contains(r#"token = "chrs_bridge_xyz""#));
         assert!(s.contains("exec chorus bridge"));
         assert!(s.contains("command -v chorus"));
+    }
+
+    #[test]
+    fn install_step_targets_the_release_pipeline() {
+        // Guards against accidentally regressing back to `cargo install`
+        // for native platforms or breaking the target-triple mapping.
+        // The script must:
+        //   - point at the Fullstop000/Chorus releases API
+        //   - select one of the three targets shipped in
+        //     .github/workflows/release.yml (Intel macOS deliberately
+        //     out of the matrix; that case errors with a cargo-install
+        //     hint)
+        //   - download the versioned tarball under the resolved tag
+        let s = render_onboarding_script("chorus.test", "chrs_bridge_xyz");
+        assert!(s.contains(r#"REPO="Fullstop000/Chorus""#));
+        assert!(s.contains("api.github.com/repos/$REPO/releases/latest"));
+        for target in [
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "aarch64-apple-darwin",
+        ] {
+            assert!(s.contains(target), "missing target mapping for {target}");
+        }
+        assert!(s.contains("releases/download/$TAG/chorus-$TAG-$TARGET.tar.gz"));
+        // Intel macOS falls back to cargo install (out of release matrix).
+        assert!(s.contains("Intel macOS is not in the release matrix"));
     }
 
     #[test]
