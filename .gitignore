@@ -57,8 +57,10 @@ qa/cases/playwright/playwright-report/
 qa/cases/playwright/test-results/
 .codex/
 .claude/
+docs/plan/
 docs/plans
 docs/handoffs
+docs/PRD.md
 docs/superpowers
 .playwright-cli/
 node_modules
