@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import type { ChannelInfo } from '../../data'
 
 const generalChannel: ChannelInfo = {
@@ -90,7 +91,11 @@ describe('Sidebar workspace header', () => {
   })
 
   it('renders the active workspace in the sidebar header', () => {
-    const html = renderToStaticMarkup(<Sidebar />)
+    const html = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/c/general']}>
+        <Sidebar />
+      </MemoryRouter>,
+    )
 
     expect(html).toContain('current: Chorus Local')
   })

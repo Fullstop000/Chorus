@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Ellipsis, Inbox, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useStore } from '../../store'
 import { useAgents, useChannels, useHumans, useInbox, useRefresh, useWorkspaces } from '../../hooks/data'
-import type { AgentInfo } from '../../components/agents/types'
 import type { ChannelInfo } from '../../components/channels/types'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { CreateAgentModal } from '../../components/agents/CreateAgentModal'
 import { CreateChannelModal } from '../../components/channels/CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from '../../components/channels/EditChannelModal'
+import { channelPath, dmPath, inboxPath, rootPath, settingsPath } from '../../lib/routes'
 import './Sidebar.css'
 
 function agentColor(name: string): string {
@@ -57,7 +58,9 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings, showDecisions, setShowDecisions } = useStore()
+  const { currentUser, currentUserId, currentChannel, currentAgent } = useStore()
+  const navigate = useNavigate()
+  const location = useLocation()
   const showConversationIds = useStore((s) => s.showConversationIds)
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
@@ -92,8 +95,20 @@ export function Sidebar() {
 
   function recoverSelectionAfterChannelRemoval(channelId?: string) {
     if (!channelId || currentChannel?.id !== channelId) return
-    const fallback = channels.find((channel) => channel.id !== channelId) ?? null
-    setCurrentChannel(fallback)
+    const fallback = channels.find((channel) => channel.id !== channelId)
+    navigate(fallback ? channelPath(fallback.name) : rootPath(), { replace: true })
+  }
+
+  const showSettings = location.pathname.startsWith('/settings')
+  const showDecisions = location.pathname === inboxPath()
+
+  function toggleOverlay(target: string) {
+    if (location.pathname === target || location.pathname.startsWith(target + '/')) {
+      const from = (location.state as { from?: string } | null)?.from
+      navigate(from ?? rootPath())
+    } else {
+      navigate(target, { state: { from: location.pathname } })
+    }
   }
 
   return (
@@ -162,7 +177,7 @@ export function Sidebar() {
                   key={ch.id ?? ch.name}
                   type="button"
                   className={`sidebar-item${currentChannel?.name === ch.name ? ' active' : ''}`}
-                  onClick={() => setCurrentChannel(ch)}
+                  onClick={() => navigate(channelPath(ch.name))}
                   title={ch.description ?? ch.name}
                 >
                   <span className="sidebar-item-hash">#</span>
@@ -193,7 +208,7 @@ export function Sidebar() {
                     className={`sidebar-item sidebar-channel-button${
                       ch.channel_type !== 'team' ? ' has-actions' : ''
                     }${isActive ? ' active' : ''}`}
-                    onClick={() => setCurrentChannel(ch)}
+                    onClick={() => navigate(channelPath(ch.name))}
                     title={ch.description ?? ch.name}
                   >
                     <span className="sidebar-item-hash">#</span>
@@ -296,7 +311,7 @@ export function Sidebar() {
                   className={`sidebar-item${
                     currentAgent?.name === agent.name ? ' active' : ''
                   }`}
-                  onClick={() => setCurrentAgent(agent as AgentInfo)}
+                  onClick={() => navigate(dmPath(agent.name))}
                 >
                   <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
                   <span className="sidebar-item-main">
@@ -385,11 +400,17 @@ export function Sidebar() {
             type="button"
             aria-label={showDecisions ? 'Close decision inbox' : 'Open decision inbox'}
             aria-pressed={showDecisions}
-            onClick={() => setShowDecisions(!showDecisions)}
+            onClick={() => toggleOverlay(inboxPath())}
           >
             <Inbox size={15} />
           </button>
-          <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>
+          <button
+            className="sidebar-footer-cog"
+            type="button"
+            aria-label={showSettings ? 'Close settings' : 'Open settings'}
+            aria-pressed={showSettings}
+            onClick={() => toggleOverlay(settingsPath())}
+          >
             <Settings2 size={15} />
           </button>
         </div>
@@ -410,7 +431,7 @@ export function Sidebar() {
           onOpenChange={(open) => setShowCreateChannel(open)}
           onCreated={(created) => {
             setShowCreateChannel(false)
-            setCurrentChannel({ name: created.name, id: created.id ?? undefined, joined: true } as ChannelInfo)
+            navigate(channelPath(created.name))
             void refreshChannels()
             void refreshTeams()
           }}
@@ -423,7 +444,7 @@ export function Sidebar() {
           onOpenChange={(open) => !open && setEditingChannel(null)}
           onSaved={(updated) => {
             if (currentChannel?.id === updated.id) {
-              setCurrentChannel({ ...currentChannel, name: updated.name } as ChannelInfo)
+              navigate(channelPath(updated.name), { replace: true })
             }
             setEditingChannel(null)
             void refreshChannels()
