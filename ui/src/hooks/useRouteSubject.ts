@@ -1,4 +1,4 @@
-import { useMatch, useParams } from 'react-router-dom'
+import { useMatch } from 'react-router-dom'
 import { useStore } from '../store/uiStore'
 import { useAgents, useChannels } from './data'
 import type { AgentInfo, ChannelInfo } from '../data'
@@ -72,7 +72,11 @@ export function useCurrentAgent(): AgentInfo | null {
 }
 
 export function useRouteSubject(): RouteSubject {
-  const params = useParams()
+  // useMatch() params, NOT useParams(). useParams returns params from the
+  // closest matched route element. Components like MainPanel render under
+  // the `<Route path="*">` catchall, where useParams() yields `{ '*': ... }`
+  // — none of our schema params would be visible. Each useMatch below
+  // re-parses the current URL against its own pattern.
   const channelMatch = useMatch('/c/:channel/*')
   const tasksBoardMatch = useMatch('/c/:channel/tasks')
   const taskDetailMatch = useMatch('/c/:channel/tasks/:n')
@@ -99,17 +103,17 @@ export function useRouteSubject(): RouteSubject {
   if (settingsRootMatch) return { kind: 'settings', section: 'profile' }
 
   if (taskDetailMatch) {
-    const name = params.channel
+    const name = taskDetailMatch.params.channel
     if (!name) return { kind: 'unknown' }
     const channel = findChannelByName(allChannels, name)
     if (!channel) return { kind: 'unknown' }
-    const n = Number(params.n)
+    const n = Number(taskDetailMatch.params.n)
     if (!Number.isInteger(n) || n <= 0) return { kind: 'unknown' }
     return { kind: 'task', channel, taskNumber: n }
   }
 
   if (channelMatch) {
-    const name = params.channel
+    const name = channelMatch.params.channel
     if (!name) return { kind: 'unknown' }
     const channel = findChannelByName(allChannels, name)
     if (!channel) return { kind: 'unknown' }
@@ -117,7 +121,7 @@ export function useRouteSubject(): RouteSubject {
   }
 
   if (dmMatch) {
-    const name = params.agent
+    const name = dmMatch.params.agent
     if (!name) return { kind: 'unknown' }
     const agent = findAgentByName(agents, name)
     if (!agent) return { kind: 'unknown' }
@@ -132,8 +136,8 @@ export function useRouteSubject(): RouteSubject {
   }
 
   if (agentTabMatch) {
-    const name = params.agent
-    const tab = params.tab
+    const name = agentTabMatch.params.agent
+    const tab = agentTabMatch.params.tab
     if (!name) return { kind: 'unknown' }
     const agent = findAgentByName(agents, name)
     if (!agent) return { kind: 'unknown' }
