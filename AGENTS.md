@@ -56,7 +56,6 @@ Use this doc index before touching a subsystem or workflow:
 | [docs/ACP.md](docs/ACP.md) | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
 | [docs/DRIVERS.md](docs/DRIVERS.md) | Runtime driver API + step-by-step guide for adding a new driver | Adding or changing a runtime driver |
 | [docs/BRIDGE.md](docs/BRIDGE.md) | Shared MCP bridge — architecture, per-runtime MCP config table, discovery file, troubleshooting | Wiring a runtime's MCP transport, debugging bridge connectivity / stale discovery, or auditing the in-process bridge layer |
-| [docs/plan/bridge-platform-protocol.md](docs/plan/bridge-platform-protocol.md) | Phase 3 bridge ↔ platform wire protocol — `chorus bridge` runtime, frame contract, ownership rules | Running `chorus bridge`, splitting Chorus across machines, or modifying the WS protocol |
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | Decisions, bug postmortems, project facts, patterns | Debugging non-obvious behavior or revisiting architecture choices |
 
 ---
