@@ -542,7 +542,14 @@ export function SettingsPage() {
 
   function handleClose() {
     const from = (location.state as { from?: string } | null)?.from
-    navigate(from ?? rootPath())
+    if (from) {
+      // We set `from` ourselves when opening, so there IS a prior entry.
+      // Pop it (don't push another), which keeps browser back behaving
+      // correctly afterward.
+      navigate(-1)
+      return
+    }
+    navigate(rootPath(), { replace: true })
   }
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile')
 

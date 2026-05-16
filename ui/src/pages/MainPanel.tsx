@@ -15,8 +15,34 @@ import {
   useCurrentChannel,
   useRouteSubject,
 } from "../hooks/useRouteSubject";
-import { inboxPath, settingsPath } from "../lib/routes";
+import { inboxPath, rootPath, settingsPath } from "../lib/routes";
 import type { ActiveTab } from "../store/uiStore";
+import { Link } from "react-router-dom";
+
+/** Inline not-found leaf rendered when the URL doesn't match any known route. */
+function NotFoundView() {
+  return (
+    <div
+      className="empty-state"
+      style={{
+        flex: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "column",
+        gap: 12,
+        color: "var(--color-muted-foreground)",
+      }}
+    >
+      <h1 className="sr-only">Not available</h1>
+      <span className="empty-state-icon">[chorus::404]</span>
+      <span>This view is not available.</span>
+      <Link to={rootPath()} style={{ color: "var(--color-foreground)" }}>
+        Back to start
+      </Link>
+    </div>
+  );
+}
 import { useHistory } from "../hooks/useHistory";
 import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
@@ -229,6 +255,8 @@ export function MainPanel() {
         <DecisionsInbox />
       ) : currentTaskDetail ? (
         <TaskDetail />
+      ) : subject.kind === "unknown" ? (
+        <NotFoundView />
       ) : (
         <>
       {showHeader && (
@@ -322,6 +350,7 @@ export function MainPanel() {
           )}
           {!showHeader && (
             <div
+              className="empty-state"
               style={{
                 flex: 1,
                 display: "flex",

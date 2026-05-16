@@ -7,18 +7,20 @@ import { channelPath } from '../lib/routes'
 /**
  * Renders at `/`. Replaces the old `autoSelectChannel` effect: once the
  * shell has bootstrapped, redirects to the first joined channel (system
- * channels first, then visible user channels). Renders nothing while the
- * bootstrap is in flight or when no channels are joined — the empty
- * state in the parent layout handles the no-channels case.
+ * channels first, then visible user channels). When no channels are
+ * joined, renders an empty-state panel rather than returning null —
+ * otherwise the user lands on a blank screen with only the sidebar.
  *
- * `replace: true` is critical so back-button from the first channel does
- * not loop back to `/`.
+ * `replace: true` on the redirect is critical so the browser back
+ * button from the first channel does not loop back to `/`.
  */
-export function RootRedirect(): JSX.Element | null {
+export function RootRedirect(): JSX.Element {
   const shellBootstrapped = useStore((s) => s.shellBootstrapped)
   const { channels, systemChannels } = useChannels()
 
-  if (!shellBootstrapped) return null
+  if (!shellBootstrapped) {
+    return <EmptyShell label="Loading…" />
+  }
 
   const joined = [
     ...systemChannels.filter((c) => c.joined),
@@ -26,5 +28,26 @@ export function RootRedirect(): JSX.Element | null {
   ]
   const first = joined[0]
   if (first) return <Navigate to={channelPath(first.name)} replace />
-  return null
+  return <EmptyShell label="Select a channel or agent to get started" />
+}
+
+function EmptyShell({ label }: { label: string }): JSX.Element {
+  return (
+    <div
+      className="empty-state"
+      style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: 8,
+        color: 'var(--color-muted-foreground)',
+      }}
+    >
+      <h1 className="sr-only">Chorus — {label}</h1>
+      <span className="empty-state-icon">[chorus::idle]</span>
+      <span>{label}</span>
+    </div>
+  )
 }

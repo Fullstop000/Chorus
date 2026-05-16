@@ -212,15 +212,22 @@ export function TaskDetail() {
   // one place instead of duplicating it inside the advance handler.
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Single close path — used by the back button and by Esc. Returns the user
-  // to wherever they came from (recorded in location.state.from by the
-  // caller that opened the detail). Falls back to the parent channel's
-  // tasks board when there's no recorded origin (e.g. deep-link entry).
-  // Not `navigate(-1)` — history.length lies in SPAs.
+  // Single close path — used by the back button and by Esc.
+  //
+  // When `location.state.from` is present (set by the caller that opened
+  // the detail), use `navigate(-1)` to pop the detail entry off history.
+  // The `from` presence is our signal that there IS a prior in-app
+  // history entry — `history.length` would lie, but a `from` we set
+  // ourselves does not. Popping (not pushing) means the browser back
+  // button continues to behave correctly afterward.
+  //
+  // For cold deep-link entries (no `from`), there's nothing to pop:
+  // navigate to the parent channel's tasks board with `replace: true`
+  // so a subsequent browser back doesn't loop back into the detail.
   function handleClose() {
     const from = (location.state as { from?: string } | null)?.from
     if (from) {
-      navigate(from)
+      navigate(-1)
       return
     }
     if (currentTaskDetail) {

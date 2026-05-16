@@ -107,8 +107,15 @@ export function Sidebar() {
 
   function toggleOverlay(target: string) {
     if (location.pathname === target || location.pathname.startsWith(target + '/')) {
+      // We're already on the overlay; close it. If `from` was set when
+      // we navigated in, pop that entry (don't push); otherwise replace
+      // with root so browser back doesn't return to the overlay.
       const from = (location.state as { from?: string } | null)?.from
-      navigate(from ?? rootPath())
+      if (from) {
+        navigate(-1)
+      } else {
+        navigate(rootPath(), { replace: true })
+      }
     } else {
       navigate(target, { state: { from: location.pathname } })
     }
