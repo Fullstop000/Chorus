@@ -1,35 +1,77 @@
-import { useStore } from "../store";
-import type { ActiveTab } from "../store";
-import "./TabBar.css";
+import { useLocation, useMatch, useNavigate } from 'react-router-dom'
+import { channelPath, tasksBoardPath, agentTabPath, dmPath } from '../lib/routes'
+import './TabBar.css'
 
-const AGENT_TABS: { id: ActiveTab; label: string }[] = [
-  { id: "chat", label: "Chat" },
-  { id: "tasks", label: "Tasks" },
-  { id: "workspace", label: "Workspace" },
-  { id: "activity", label: "Activity" },
-  { id: "profile", label: "Profile" },
-];
+interface Tab {
+  label: string
+  path: string
+  isActive: boolean
+}
 
-const CHANNEL_TABS: { id: ActiveTab; label: string }[] = [
-  { id: "chat", label: "Chat" },
-  { id: "tasks", label: "Tasks" },
-];
+function TabButton({ tab }: { tab: Tab }) {
+  const navigate = useNavigate()
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(tab.path)}
+      className={`tab-bar__item${tab.isActive ? ' is-active' : ''}`}
+    >
+      {tab.label}
+    </button>
+  )
+}
 
 export function TabBar() {
-  const { currentAgent, activeTab, setActiveTab } = useStore();
-  const tabs = currentAgent ? AGENT_TABS : CHANNEL_TABS;
+  const channelMatch = useMatch('/c/:channel/*')
+  const agentTabMatch = useMatch('/agent/:agent/:tab')
+  const dmMatch = useMatch('/dm/:agent')
+  const location = useLocation()
 
-  return (
-    <div className="tab-bar">
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
-          className={`tab-bar__item${activeTab === tab.id ? " is-active" : ""}`}
-        >
-          {tab.label}
-        </button>
-      ))}
-    </div>
-  );
+  if (channelMatch) {
+    const name = channelMatch.params.channel
+    if (!name) return null
+    const chatPath = channelPath(name)
+    const tasksPath = tasksBoardPath(name)
+    const tabs: Tab[] = [
+      { label: 'Chat', path: chatPath, isActive: location.pathname === chatPath },
+      {
+        label: 'Tasks',
+        path: tasksPath,
+        // Parent-tab highlight persists for task detail (`/tasks/:n`).
+        isActive: location.pathname.startsWith(tasksPath),
+      },
+    ]
+    return (
+      <div className="tab-bar">
+        {tabs.map((tab) => (
+          <TabButton key={tab.label} tab={tab} />
+        ))}
+      </div>
+    )
+  }
+
+  const agentName = agentTabMatch?.params.agent ?? dmMatch?.params.agent
+  if (agentName) {
+    const dmTo = dmPath(agentName)
+    const tabs: Tab[] = [
+      { label: 'Chat', path: dmTo, isActive: location.pathname === dmTo },
+      ...(['workspace', 'activity', 'profile'] as const).map((t) => {
+        const path = agentTabPath(agentName, t)
+        return {
+          label: t.charAt(0).toUpperCase() + t.slice(1),
+          path,
+          isActive: location.pathname === path,
+        }
+      }),
+    ]
+    return (
+      <div className="tab-bar">
+        {tabs.map((tab) => (
+          <TabButton key={tab.label} tab={tab} />
+        ))}
+      </div>
+    )
+  }
+
+  return null
 }

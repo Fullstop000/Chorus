@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { Routes, Route } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { useStore } from "./store/uiStore";
@@ -19,14 +20,14 @@ import {
   type InboxState,
 } from "./store/inbox";
 import { dmConversationNameForParticipants } from "./data";
-import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
 import { getSession, EventType } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
 import { ToastRegion } from "./components/chat/ToastRegion";
 import { getHealth } from "./data";
-import type { AgentInfo } from "./data";
+import { useCurrentAgent } from "./hooks/useRouteSubject";
+import { RootRedirect } from "./pages/RootRedirect";
 
 function DevAuthBanner() {
   const { data } = useQuery({
@@ -135,62 +136,6 @@ function mirrorChannels(
   }, [allChannels, updateInboxState]);
 }
 
-function syncSelectedAgent(
-  agents: AgentInfo[],
-  setCurrentAgent: (agent: AgentInfo | null) => void,
-): void {
-  const currentAgent = useStore((s) => s.currentAgent);
-
-  useEffect(() => {
-    if (!currentAgent) return;
-    const freshAgent =
-      agents.find(
-        (agent) =>
-          agent.id === currentAgent.id || agent.name === currentAgent.name,
-      ) ?? null;
-
-    if (!freshAgent) {
-      setCurrentAgent(null);
-      return;
-    }
-
-    if (freshAgent === currentAgent) return;
-    setCurrentAgent(freshAgent);
-  }, [agents, currentAgent, setCurrentAgent]);
-}
-
-/** Pick the first joined channel on initial load when no channel or agent is already selected. */
-function autoSelectChannel(params: {
-  shellBootstrapped: boolean;
-  channels: ChannelInfo[];
-  systemChannels: ChannelInfo[];
-  setCurrentChannel: (channel: ChannelInfo | null) => void;
-}): void {
-  const { shellBootstrapped, channels, systemChannels, setCurrentChannel } =
-    params;
-
-  useEffect(() => {
-    const { currentAgent, currentChannel } = useStore.getState();
-    if (currentAgent) return;
-    if (!channels.length && !systemChannels.length) return;
-
-    const joinedChannels = [
-      ...systemChannels.filter((c) => c.joined),
-      ...channels.filter(isVisibleSidebarChannel),
-    ];
-
-    if (
-      currentChannel &&
-      joinedChannels.some(
-        (c) => c.id === currentChannel.id || c.name === currentChannel.name,
-      )
-    )
-      return;
-
-    setCurrentChannel(joinedChannels[0] ?? null);
-  }, [shellBootstrapped, channels, systemChannels, setCurrentChannel]);
-}
-
 /** Create the DM channel for the selected agent if it doesn't exist yet, then register it in the query cache and inbox state. */
 function ensureAgentDm(params: {
   currentHumanId: string;
@@ -289,8 +234,6 @@ export default function App() {
   const shellBootstrapped = useStore((s) => s.shellBootstrapped);
   const setCurrentUser = useStore((s) => s.setCurrentUser);
   const resetUserSession = useStore((s) => s.resetUserSession);
-  const setCurrentChannel = useStore((s) => s.setCurrentChannel);
-  const setCurrentAgent = useStore((s) => s.setCurrentAgent);
   const setShellBootstrapped = useStore((s) => s.setShellBootstrapped);
   const updateInboxState = useStore((s) => s.updateInboxState);
 
@@ -301,29 +244,18 @@ export default function App() {
     shellBootstrapped,
     prevAllChannelsRef.current,
   );
-  const { whoamiQuery, agentsQuery, channelsQuery, inboxQuery } = queries;
+  const { whoamiQuery, channelsQuery, inboxQuery } = queries;
 
   const channelsData = channelsQuery.data;
-  const agents = agentsQuery.data ?? [];
   prevAllChannelsRef.current = channelsData?.allChannels;
   const allChannels = channelsData?.allChannels ?? [];
-  const channels = channelsData?.channels ?? [];
-  const systemChannels = channelsData?.systemChannels ?? [];
   const dmChannels = channelsData?.dmChannels ?? [];
 
   syncWhoami(whoamiQuery.data, currentUserId, setCurrentUser, resetUserSession);
-  syncSelectedAgent(agents, setCurrentAgent);
 
   mirrorChannels(allChannels, updateInboxState);
 
-  autoSelectChannel({
-    shellBootstrapped,
-    channels,
-    systemChannels,
-    setCurrentChannel,
-  });
-
-  const currentAgent = useStore((s) => s.currentAgent);
+  const currentAgent = useCurrentAgent();
   ensureAgentDm({
     currentHumanId: currentUserId,
     currentAgentId: currentAgent?.id ?? null,
@@ -349,7 +281,10 @@ export default function App() {
     <div className="app-shell">
       <DevAuthBanner />
       <Sidebar />
-      <MainPanel />
+      <Routes>
+        <Route path="/" element={<RootRedirect />} />
+        <Route path="*" element={<MainPanel />} />
+      </Routes>
       <GlobalToasts />
     </div>
   );

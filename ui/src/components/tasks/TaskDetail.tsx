@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../../store";
-import type { TaskDetailTarget } from "../../store/uiStore";
+import {
+  useCurrentTaskDetail,
+  type TaskDetailTarget,
+} from "../../hooks/useRouteSubject";
+import { tasksBoardPath } from "../../lib/routes";
 import { useHistory } from "../../hooks/useHistory";
 import { ChatPanel } from "../chat/ChatPanel";
 import { MessageInput } from "../chat/MessageInput";
@@ -174,8 +179,10 @@ export function TaskDetailView({
  * so the hook call is stable across renders and satisfies Rules of Hooks.
  */
 export function TaskDetail() {
-  const { currentUser, currentUserId, currentTaskDetail, setCurrentTaskDetail, setActiveTab } =
-    useStore();
+  const { currentUser, currentUserId } = useStore();
+  const currentTaskDetail = useCurrentTaskDetail();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advanceError, setAdvanceError] = useState<string | null>(null);
@@ -186,12 +193,27 @@ export function TaskDetail() {
   // one place instead of duplicating it inside the advance handler.
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Single close path — used by the back button and by Esc. Restores whatever
-  // tab the user came from (falls back to Tasks when the target didn't stash one,
-  // e.g. deep-linked or programmatic opens).
+  // Single close path — used by the back button and by Esc.
+  //
+  // When `location.state.from` is present (set by the caller that opened
+  // the detail), use `navigate(-1)` to pop the detail entry off history.
+  // The `from` presence is our signal that there IS a prior in-app
+  // history entry — `history.length` would lie, but a `from` we set
+  // ourselves does not. Popping (not pushing) means the browser back
+  // button continues to behave correctly afterward.
+  //
+  // For cold deep-link entries (no `from`), there's nothing to pop:
+  // navigate to the parent channel's tasks board with `replace: true`
+  // so a subsequent browser back doesn't loop back into the detail.
   function handleClose() {
-    setActiveTab(currentTaskDetail?.returnToTab ?? "tasks");
-    setCurrentTaskDetail(null);
+    const from = (location.state as { from?: string } | null)?.from
+    if (from) {
+      navigate(-1)
+      return
+    }
+    if (currentTaskDetail) {
+      navigate(tasksBoardPath(currentTaskDetail.parentSlug), { replace: true })
+    }
   }
 
   // Esc should back out of the detail overlay (keyboard a11y — Dialogs and

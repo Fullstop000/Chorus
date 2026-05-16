@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.12.0] - 2026-05-17
+
+### Changed
+- **URL-driven navigation.** Channels, agents, tasks, settings, and inbox now live at routes (`/c/:channel`, `/c/:channel/tasks/:n`, `/dm/:agent`, `/agent/:agent/{profile,activity,workspace}`, `/inbox`, `/settings/:section`). Deep links, browser back/forward, reload-restores-view, and bookmarks all work. Names (not ids) appear in URLs.
+
 ## [0.0.11.0] - 2026-05-13
 
 ### Added

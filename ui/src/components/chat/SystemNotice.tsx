@@ -1,6 +1,7 @@
+import { useNavigate } from "react-router-dom";
 import type { HistoryMessage } from "../../data";
 import { useAgents, useChannels, useHumans } from "../../hooks/data";
-import { useStore } from "../../store";
+import { agentTabPath, channelPath } from "../../lib/routes";
 
 interface SystemNoticeProps {
   message: HistoryMessage;
@@ -90,7 +91,7 @@ function isNoticeTarget(value: unknown): value is NoticeTarget {
 function ActorChip({ actor }: { actor: NoticeActor }) {
   const agents = useAgents();
   const humans = useHumans();
-  const { setCurrentAgent, setActiveTab } = useStore();
+  const navigate = useNavigate();
 
   if (actor.type === "agent") {
     const agent = agents.find((a) => a.id === actor.id);
@@ -100,10 +101,7 @@ function ActorChip({ actor }: { actor: NoticeActor }) {
       <button
         type="button"
         className="system-notice__chip"
-        onClick={() => {
-          setCurrentAgent(agent);
-          setActiveTab("profile");
-        }}
+        onClick={() => navigate(agentTabPath(agent.name, "profile"))}
         title={`View ${label} profile`}
       >
         {label}
@@ -135,7 +133,7 @@ function ActorPlaceholder({ id }: { id: string }) {
 
 function TargetChip({ target }: { target: NoticeTarget }) {
   const { allChannels } = useChannels();
-  const { setCurrentChannel } = useStore();
+  const navigate = useNavigate();
 
   if (target.type === "channel") {
     const channel = allChannels.find((c) => c.id === target.id);
@@ -146,7 +144,7 @@ function TargetChip({ target }: { target: NoticeTarget }) {
       <button
         type="button"
         className="system-notice__chip"
-        onClick={() => setCurrentChannel(channel)}
+        onClick={() => navigate(channelPath(channel.name))}
         title={`Open ${target.label}`}
       >
         {target.label}

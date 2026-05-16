@@ -1,8 +1,11 @@
 import { useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { User } from "lucide-react";
 import { useStore } from "../../store";
 import { useTasks } from "../../hooks/useTasks";
 import { createTasks } from "../../data";
+import { taskDetailPath } from "../../lib/routes";
+import { useCurrentChannel } from "../../hooks/useRouteSubject";
 import type { TaskInfo, TaskStatus } from "./types";
 import { FormError } from "@/components/ui/form";
 import "./TasksPanel.css";
@@ -16,28 +19,22 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
 
 function TaskCard({
   task,
-  parentChannelId,
   parentSlug,
 }: {
   task: TaskInfo;
   parentChannelId: string;
   parentSlug: string;
 }) {
-  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
-  const activeTab = useStore((s) => s.activeTab);
+  const navigate = useNavigate();
+  const location = useLocation();
 
-  // Primary click opens the task detail view. Status advancement (previously
-  // auto-advance on card click) moves to affordances inside the detail page
-  // in Task 9 — clicking a row is now pure navigation.
-  //
-  // `returnToTab` snapshots the tab the user was on so the back button / Esc
-  // can restore it instead of always dropping users on Tasks.
+  // Click opens the task detail view at /c/<slug>/tasks/<n>. We carry the
+  // current pathname through `location.state.from` so the detail's back
+  // button can return the user where they came from (chat origin vs tasks
+  // board origin) without relying on `history.length`, which lies in SPAs.
   function openDetail() {
-    setCurrentTaskDetail({
-      parentChannelId,
-      parentSlug,
-      taskNumber: task.taskNumber,
-      returnToTab: activeTab,
+    navigate(taskDetailPath(parentSlug, task.taskNumber), {
+      state: { from: location.pathname },
     });
   }
 
@@ -66,7 +63,8 @@ function TaskCard({
 }
 
 export function TasksPanel() {
-  const { currentUserId, currentChannel } = useStore();
+  const { currentUserId } = useStore();
+  const currentChannel = useCurrentChannel();
   const channelId = currentChannel?.id ?? null;
   const { tasks, loading, refresh } = useTasks(currentUserId, channelId);
   const [newTaskTitle, setNewTaskTitle] = useState("");

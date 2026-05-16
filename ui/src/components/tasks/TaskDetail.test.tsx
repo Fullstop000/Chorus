@@ -1,11 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskDetailView } from "./TaskDetail";
-import { useStore } from "../../store";
 import type { TaskInfo } from "../../data";
 
 afterEach(() => {
-  useStore.getState().setCurrentTaskDetail(null);
   vi.restoreAllMocks();
 });
 
@@ -189,73 +187,6 @@ describe("TaskDetailView", () => {
       />,
     );
     expect(html).toContain("Failed to advance task: HTTP 403 not the claimer");
-  });
-});
-
-describe("currentTaskDetail store behaviour", () => {
-  it("setCurrentTaskDetail stores and clears the target", () => {
-    useStore.getState().setCurrentTaskDetail({
-      parentChannelId: "cid",
-      parentSlug: "design",
-      taskNumber: 3,
-    });
-    expect(useStore.getState().currentTaskDetail).toEqual({
-      parentChannelId: "cid",
-      parentSlug: "design",
-      taskNumber: 3,
-    });
-
-    useStore.getState().setCurrentTaskDetail(null);
-    expect(useStore.getState().currentTaskDetail).toBeNull();
-  });
-
-  it("switching to a different parent channel discards stale task detail", () => {
-    useStore.getState().setCurrentTaskDetail({
-      parentChannelId: "cid-a",
-      parentSlug: "alpha",
-      taskNumber: 1,
-    });
-
-    useStore.getState().setCurrentChannel({
-      id: "cid-b",
-      name: "beta",
-      joined: true,
-      channel_type: "team",
-    });
-
-    expect(useStore.getState().currentTaskDetail).toBeNull();
-  });
-
-  it("preserves the returnToTab field when round-tripping through the store", () => {
-    useStore.getState().setActiveTab("chat");
-    useStore.getState().setCurrentTaskDetail({
-      parentChannelId: "cid-r",
-      parentSlug: "routes",
-      taskNumber: 42,
-      returnToTab: "chat",
-    });
-    expect(useStore.getState().currentTaskDetail?.returnToTab).toBe("chat");
-  });
-
-  it("re-selecting the same parent channel preserves the open task detail", () => {
-    useStore.getState().setCurrentTaskDetail({
-      parentChannelId: "cid-keep",
-      parentSlug: "keep",
-      taskNumber: 9,
-    });
-
-    useStore.getState().setCurrentChannel({
-      id: "cid-keep",
-      name: "keep",
-      joined: true,
-      channel_type: "team",
-    });
-
-    expect(useStore.getState().currentTaskDetail).toEqual({
-      parentChannelId: "cid-keep",
-      parentSlug: "keep",
-      taskNumber: 9,
-    });
   });
 });
 

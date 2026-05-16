@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { getChannelMembers, getTeam } from "../data";
 import { useStore } from "../store";
 import {
@@ -7,11 +8,20 @@ import {
   useInbox,
   useRefresh,
   useTeams,
-  useTarget,
 } from "../hooks/data";
+import { useTarget } from "../hooks/useTarget";
+import {
+  useCurrentAgent,
+  useCurrentChannel,
+  useCurrentTaskDetail,
+  useRouteSubject,
+} from "../hooks/useRouteSubject";
+import { inboxPath, rootPath, settingsPath } from "../lib/routes";
+import type { ActiveTab } from "../store/uiStore";
 import { useHistory } from "../hooks/useHistory";
 import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
+import { EmptyShell } from "./EmptyShell";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
 import { TaskDetail } from "../components/tasks/TaskDetail";
@@ -34,17 +44,47 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+/** Rendered when the URL doesn't match any known route. */
+function NotFoundView() {
+  return (
+    <EmptyShell
+      label="This view is not available."
+      icon="[chorus::404]"
+      extra={
+        <Link to={rootPath()} style={{ color: "var(--color-foreground)" }}>
+          Back to start
+        </Link>
+      }
+    />
+  );
+}
+
 export function MainPanel() {
-  const {
-    currentUser,
-    currentUserId,
-    activeTab,
-    currentChannel,
-    currentAgent,
-    showSettings,
-    showDecisions,
-    currentTaskDetail,
-  } = useStore();
+  const { currentUser, currentUserId } = useStore();
+  const subject = useRouteSubject();
+  const currentChannel = useCurrentChannel();
+  const currentAgent = useCurrentAgent();
+  const location = useLocation();
+
+  // Derive the rest of the legacy view-state from the URL. With the URL
+  // schema in place these are no longer in the store.
+  const showSettings = location.pathname.startsWith(settingsPath());
+  const showDecisions = location.pathname === inboxPath();
+  const currentTaskDetail = useCurrentTaskDetail();
+  const activeTab: ActiveTab = (() => {
+    switch (subject.kind) {
+      case "task":
+        return "tasks";
+      case "channel":
+        return subject.view === "tasks" ? "tasks" : "chat";
+      case "agent-tab":
+        return subject.tab;
+      case "dm":
+        return "chat";
+      default:
+        return "chat";
+    }
+  })();
   const agents = useAgents();
   const humans = useHumans();
   const teams = useTeams();
@@ -199,6 +239,8 @@ export function MainPanel() {
         <DecisionsInbox />
       ) : currentTaskDetail ? (
         <TaskDetail />
+      ) : subject.kind === "unknown" ? (
+        <NotFoundView />
       ) : (
         <>
       {showHeader && (
@@ -291,21 +333,7 @@ export function MainPanel() {
             </>
           )}
           {!showHeader && (
-            <div
-              style={{
-                flex: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "var(--color-muted-foreground)",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              <h1 className="sr-only">Chorus — Select a channel or agent to get started</h1>
-              <span className="empty-state-icon">[chorus::idle]</span>
-              <span>Select a channel or agent to get started</span>
-            </div>
+            <EmptyShell label="Select a channel or agent to get started" />
           )}
 
           {activeTab === "chat" &&

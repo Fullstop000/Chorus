@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   deleteAgent,
   getAgentDetail,
@@ -16,6 +17,8 @@ import type {
 import { useRuntimeStatuses } from "../../../hooks/useRuntimeStatuses";
 import { useStore } from "../../../store";
 import { useRefresh } from "../../../hooks/data";
+import { useCurrentAgent } from "../../../hooks/useRouteSubject";
+import { rootPath } from "../../../lib/routes";
 import {
   AgentConfigForm,
   normalizeRuntimeReasoningEffort,
@@ -71,8 +74,8 @@ function activityDotColor(activity?: string): string {
 }
 
 export function ProfilePanel() {
-  const { currentAgent: selectedAgent, setCurrentAgent: setSelectedAgent } =
-    useStore();
+  const selectedAgent = useCurrentAgent();
+  const navigate = useNavigate();
   const { refreshAgents } = useRefresh();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -320,7 +323,7 @@ export function ProfilePanel() {
         onOpenChange={setShowDelete}
         onDeleted={async () => {
           setShowDelete(false);
-          setSelectedAgent(null);
+          navigate(rootPath());
           await refreshAgents();
         }}
       />
