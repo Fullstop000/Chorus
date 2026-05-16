@@ -1,6 +1,7 @@
 import { Settings2, Users } from "lucide-react";
 import { useStore } from "../../store";
 import { useChannels } from "../../hooks/data";
+import { useCurrentAgent, useCurrentChannel } from "../../hooks/useRouteSubject";
 import { MessageList } from "./MessageList";
 import type { HistoryMessage } from "./types";
 import "./ChatPanel.css";
@@ -20,7 +21,8 @@ export function ChatHeader({
   onToggleMembers,
   onOpenTeamSettings,
 }: ChatHeaderProps) {
-  const { currentChannel, currentAgent } = useStore();
+  const currentChannel = useCurrentChannel();
+  const currentAgent = useCurrentAgent();
   const { channels } = useChannels();
   const channelInfo = currentChannel
     ? channels.find((channel) => channel.name === currentChannel.name)

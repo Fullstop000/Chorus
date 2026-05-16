@@ -48,6 +48,29 @@ function findDmChannel(params: {
   return dmChannels.find((c) => candidates.has(c.name))
 }
 
+/**
+ * Convenience: the channel the user is in for channel-route contexts only.
+ * Returns null on DM and agent routes — matches the legacy `currentChannel`
+ * field semantics, where DMs were carried via `currentAgent` and
+ * `currentChannel` was null.
+ */
+export function useCurrentChannel(): ChannelInfo | null {
+  const subject = useRouteSubject()
+  if (subject.kind === 'channel' || subject.kind === 'task') return subject.channel
+  return null
+}
+
+/**
+ * Convenience: the agent the user is interacting with on DM and agent-tab
+ * routes. Returns null in channel and other contexts — matches legacy
+ * `currentAgent` semantics.
+ */
+export function useCurrentAgent(): AgentInfo | null {
+  const subject = useRouteSubject()
+  if (subject.kind === 'dm' || subject.kind === 'agent-tab') return subject.agent
+  return null
+}
+
 export function useRouteSubject(): RouteSubject {
   const params = useParams()
   const channelMatch = useMatch('/c/:channel/*')

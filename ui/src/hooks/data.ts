@@ -206,11 +206,3 @@ export function useInbox() {
   return selectors
 }
 
-/** Backend routing key for the current selection. Centralizes the `#`/`dm:@` prefix. */
-export function useTarget(): string | null {
-  const currentChannel = useStore((s) => s.currentChannel)
-  const currentAgent = useStore((s) => s.currentAgent)
-  if (currentChannel) return `#${currentChannel.name}`
-  if (currentAgent) return `dm:@${currentAgent.name}`
-  return null
-}

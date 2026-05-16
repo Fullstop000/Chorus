@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { getChannelMembers, getTeam } from "../data";
 import { useStore } from "../store";
 import {
@@ -7,8 +8,15 @@ import {
   useInbox,
   useRefresh,
   useTeams,
-  useTarget,
 } from "../hooks/data";
+import { useTarget } from "../hooks/useTarget";
+import {
+  useCurrentAgent,
+  useCurrentChannel,
+  useRouteSubject,
+} from "../hooks/useRouteSubject";
+import { inboxPath, settingsPath } from "../lib/routes";
+import type { ActiveTab } from "../store/uiStore";
 import { useHistory } from "../hooks/useHistory";
 import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
@@ -35,16 +43,38 @@ import {
 } from "@/components/ui/dialog";
 
 export function MainPanel() {
-  const {
-    currentUser,
-    currentUserId,
-    activeTab,
-    currentChannel,
-    currentAgent,
-    showSettings,
-    showDecisions,
-    currentTaskDetail,
-  } = useStore();
+  const { currentUser, currentUserId } = useStore();
+  const subject = useRouteSubject();
+  const currentChannel = useCurrentChannel();
+  const currentAgent = useCurrentAgent();
+  const location = useLocation();
+
+  // Derive the rest of the legacy view-state from the URL. With the URL
+  // schema in place these are no longer in the store.
+  const showSettings = location.pathname.startsWith(settingsPath());
+  const showDecisions = location.pathname === inboxPath();
+  const currentTaskDetail =
+    subject.kind === "task" && subject.channel.id
+      ? {
+          parentChannelId: subject.channel.id,
+          parentSlug: subject.channel.name,
+          taskNumber: subject.taskNumber,
+        }
+      : null;
+  const activeTab: ActiveTab = (() => {
+    switch (subject.kind) {
+      case "task":
+        return "tasks";
+      case "channel":
+        return subject.view === "tasks" ? "tasks" : "chat";
+      case "agent-tab":
+        return subject.tab;
+      case "dm":
+        return "chat";
+      default:
+        return "chat";
+    }
+  })();
   const agents = useAgents();
   const humans = useHumans();
   const teams = useTeams();

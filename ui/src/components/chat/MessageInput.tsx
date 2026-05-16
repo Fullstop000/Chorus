@@ -8,6 +8,7 @@ import {
   useChannels,
   useChannelMembers,
 } from "../../hooks/data";
+import { useCurrentChannel } from "../../hooks/useRouteSubject";
 import { useHistory } from "../../hooks/useHistory";
 import { sendMessage, createTasks, uploadFile } from "../../data";
 import { MentionTextarea } from "./MentionTextarea";
@@ -42,7 +43,8 @@ export function MessageInput({
   hideCreateTaskCheckbox = false,
   placeholder: placeholderOverride,
 }: Props) {
-  const { currentUser, currentUserId, currentChannel } = useStore();
+  const { currentUser, currentUserId } = useStore();
+  const currentChannel = useCurrentChannel();
   const pushToast = useStore((s) => s.pushToast);
   const agents = useAgents();
   const teams = useTeams();

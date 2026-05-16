@@ -5,6 +5,7 @@ import { useStore } from "../../store";
 import { useTasks } from "../../hooks/useTasks";
 import { createTasks } from "../../data";
 import { taskDetailPath } from "../../lib/routes";
+import { useCurrentChannel } from "../../hooks/useRouteSubject";
 import type { TaskInfo, TaskStatus } from "./types";
 import { FormError } from "@/components/ui/form";
 import "./TasksPanel.css";
@@ -62,7 +63,8 @@ function TaskCard({
 }
 
 export function TasksPanel() {
-  const { currentUserId, currentChannel } = useStore();
+  const { currentUserId } = useStore();
+  const currentChannel = useCurrentChannel();
   const channelId = currentChannel?.id ?? null;
   const { tasks, loading, refresh } = useTasks(currentUserId, channelId);
   const [newTaskTitle, setNewTaskTitle] = useState("");

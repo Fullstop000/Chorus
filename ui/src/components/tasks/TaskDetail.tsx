@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../../store";
+import { useRouteSubject } from "../../hooks/useRouteSubject";
 import { tasksBoardPath } from "../../lib/routes";
-import type { TaskDetailTarget } from "../../store/uiStore";
+/**
+ * The currently-displayed task target. Derived from the URL via
+ * useRouteSubject — replaces the legacy `TaskDetailTarget` interface
+ * exported by `uiStore`.
+ */
+interface TaskDetailTarget {
+  parentChannelId: string;
+  parentSlug: string;
+  taskNumber: number;
+}
 import { useHistory } from "../../hooks/useHistory";
 import { ChatPanel } from "../chat/ChatPanel";
 import { MessageInput } from "../chat/MessageInput";
@@ -176,9 +186,22 @@ export function TaskDetailView({
  * so the hook call is stable across renders and satisfies Rules of Hooks.
  */
 export function TaskDetail() {
-  const { currentUser, currentUserId, currentTaskDetail } = useStore();
+  const { currentUser, currentUserId } = useStore();
+  const subject = useRouteSubject();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Derive the task target from the URL via useRouteSubject. Replaces the
+  // old `currentTaskDetail` Zustand field, which was a cache of the same
+  // info populated imperatively by setCurrentTaskDetail.
+  const currentTaskDetail =
+    subject.kind === "task" && subject.channel.id
+      ? {
+          parentChannelId: subject.channel.id,
+          parentSlug: subject.channel.name,
+          taskNumber: subject.taskNumber,
+        }
+      : null;
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advanceError, setAdvanceError] = useState<string | null>(null);

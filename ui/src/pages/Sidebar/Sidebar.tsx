@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Ellipsis, Inbox, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useStore } from '../../store'
 import { useAgents, useChannels, useHumans, useInbox, useRefresh, useWorkspaces } from '../../hooks/data'
+import { useCurrentAgent, useCurrentChannel } from '../../hooks/useRouteSubject'
 import type { ChannelInfo } from '../../components/channels/types'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { CreateAgentModal } from '../../components/agents/CreateAgentModal'
@@ -58,7 +59,9 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentUserId, currentChannel, currentAgent } = useStore()
+  const { currentUser, currentUserId } = useStore()
+  const currentChannel = useCurrentChannel()
+  const currentAgent = useCurrentAgent()
   const navigate = useNavigate()
   const location = useLocation()
   const showConversationIds = useStore((s) => s.showConversationIds)

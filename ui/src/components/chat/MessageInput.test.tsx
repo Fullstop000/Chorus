@@ -80,18 +80,22 @@ vi.mock("../../hooks/data", () => ({
   useChannelMembers: () => [],
 }));
 
+// MessageInput now reads currentChannel from the URL via useCurrentChannel.
+// Stub the resolver so the test doesn't need a real Router + query cache.
+let mockedChannel: ChannelInfo | null = parentChannel;
+vi.mock("../../hooks/useRouteSubject", () => ({
+  useCurrentChannel: () => mockedChannel,
+}));
+
 // Import AFTER mocks so MessageInput picks them up.
 const { MessageInput } = await import("./MessageInput");
-const { useStore } = (await import("../../store")) as unknown as {
-  useStore: { __set: (patch: { currentChannel: ChannelInfo | null }) => void };
-};
 
 beforeEach(() => {
-  useStore.__set({ currentChannel: parentChannel });
+  mockedChannel = parentChannel;
 });
 
 afterEach(() => {
-  useStore.__set({ currentChannel: parentChannel });
+  mockedChannel = parentChannel;
 });
 
 describe("MessageInput create-task checkbox", () => {

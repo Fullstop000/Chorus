@@ -17,6 +17,7 @@ import type {
 import { useRuntimeStatuses } from "../../../hooks/useRuntimeStatuses";
 import { useStore } from "../../../store";
 import { useRefresh } from "../../../hooks/data";
+import { useCurrentAgent } from "../../../hooks/useRouteSubject";
 import { rootPath } from "../../../lib/routes";
 import {
   AgentConfigForm,
@@ -73,7 +74,7 @@ function activityDotColor(activity?: string): string {
 }
 
 export function ProfilePanel() {
-  const { currentAgent: selectedAgent } = useStore();
+  const selectedAgent = useCurrentAgent();
   const navigate = useNavigate();
   const { refreshAgents } = useRefresh();
   const [busy, setBusy] = useState(false);
