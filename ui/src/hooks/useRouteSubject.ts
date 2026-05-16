@@ -5,14 +5,7 @@ import type { AgentInfo, ChannelInfo } from '../data'
 import { dmConversationNameForParticipants } from '../data'
 import { isSettingsSection, type SettingsSection } from '../lib/routes'
 
-/**
- * What the current URL points at, resolved against the React Query cache.
- *
- * During the migration this is consumed by `UrlToStoreSync` (in App.tsx)
- * which mirrors the resolved subject into the legacy `uiStore` nav fields,
- * letting unchanged components keep reading from the store. After the
- * mirror layer is retired this hook becomes the direct read path.
- */
+/** What the current URL points at, resolved against the React Query cache. */
 export type RouteSubject =
   | { kind: 'channel'; channel: ChannelInfo; view: 'chat' | 'tasks' }
   | { kind: 'task'; channel: ChannelInfo; taskNumber: number }
@@ -46,6 +39,31 @@ function findDmChannel(params: {
     candidates.add(dmConversationNameForParticipants(humanDisplayName, agent.name))
   }
   return dmChannels.find((c) => candidates.has(c.name))
+}
+
+/**
+ * The currently-displayed task target, derived from the URL.
+ * Replaces the legacy `TaskDetailTarget` interface that lived in `uiStore`.
+ */
+export interface TaskDetailTarget {
+  parentChannelId: string
+  parentSlug: string
+  taskNumber: number
+}
+
+/**
+ * Convenience: the resolved task target for a `/c/:channel/tasks/:n` route.
+ * Returns null when the URL doesn't match or the channel lacks an id.
+ */
+export function useCurrentTaskDetail(): TaskDetailTarget | null {
+  const subject = useRouteSubject()
+  if (subject.kind !== 'task') return null
+  if (!subject.channel.id) return null
+  return {
+    parentChannelId: subject.channel.id,
+    parentSlug: subject.channel.name,
+    taskNumber: subject.taskNumber,
+  }
 }
 
 /**

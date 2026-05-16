@@ -1,16 +1,9 @@
 /**
- * URL path builders.
+ * URL path builders. All link construction goes through these helpers.
  *
- * All link construction goes through these helpers — they enforce
- * the invariants the route schema relies on (no empty names, no `.`
- * or `..` path traversal). Helpers throw on invalid input rather
- * than returning a malformed path the browser would silently
- * normalize away.
- *
- * Backend (`src/store/channels.rs:25`) currently restricts channel
- * and agent names to `[a-z0-9_-]+`, which is URL-safe as-is. DM
- * channels are server-generated as `dm:<id1>:<id2>` and contain
- * `:`, which `encodeURIComponent` handles.
+ * Names are `encodeURIComponent`-encoded so DM channel names (`dm:a:b`)
+ * round-trip safely. Empty / `.` / `..` inputs throw — `encodeURIComponent`
+ * leaves those unchanged and they get normalized away by browsers.
  */
 
 function encodeSegment(name: string, kind: 'channel' | 'agent'): string {

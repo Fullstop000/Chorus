@@ -190,15 +190,6 @@ describe("TaskDetailView", () => {
   });
 });
 
-// Note: the legacy "currentTaskDetail store behaviour" tests verified
-// cross-state cleanup in setCurrentTaskDetail / setCurrentChannel
-// (e.g. switching channels clears stale task detail; returnToTab is
-// preserved). Those invariants are now enforced by the route schema —
-// a task URL like /c/<slug>/tasks/<n> can only exist when the user is
-// at that route. Navigating to /c/<other-slug> automatically deselects
-// the task. The setters no longer exist, so no equivalent unit tests
-// are needed.
-
 describe("getTaskDetail fetcher", () => {
   it("GETs the task detail endpoint with encoded channel id", async () => {
     const payload: TaskInfo = {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { getChannelMembers, getTeam } from "../data";
 import { useStore } from "../store";
 import {
@@ -13,39 +13,15 @@ import { useTarget } from "../hooks/useTarget";
 import {
   useCurrentAgent,
   useCurrentChannel,
+  useCurrentTaskDetail,
   useRouteSubject,
 } from "../hooks/useRouteSubject";
 import { inboxPath, rootPath, settingsPath } from "../lib/routes";
 import type { ActiveTab } from "../store/uiStore";
-import { Link } from "react-router-dom";
-
-/** Inline not-found leaf rendered when the URL doesn't match any known route. */
-function NotFoundView() {
-  return (
-    <div
-      className="empty-state"
-      style={{
-        flex: 1,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "column",
-        gap: 12,
-        color: "var(--color-muted-foreground)",
-      }}
-    >
-      <h1 className="sr-only">Not available</h1>
-      <span className="empty-state-icon">[chorus::404]</span>
-      <span>This view is not available.</span>
-      <Link to={rootPath()} style={{ color: "var(--color-foreground)" }}>
-        Back to start
-      </Link>
-    </div>
-  );
-}
 import { useHistory } from "../hooks/useHistory";
 import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
+import { EmptyShell } from "./EmptyShell";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
 import { TaskDetail } from "../components/tasks/TaskDetail";
@@ -68,6 +44,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+/** Rendered when the URL doesn't match any known route. */
+function NotFoundView() {
+  return (
+    <EmptyShell
+      label="This view is not available."
+      icon="[chorus::404]"
+      extra={
+        <Link to={rootPath()} style={{ color: "var(--color-foreground)" }}>
+          Back to start
+        </Link>
+      }
+    />
+  );
+}
+
 export function MainPanel() {
   const { currentUser, currentUserId } = useStore();
   const subject = useRouteSubject();
@@ -79,14 +70,7 @@ export function MainPanel() {
   // schema in place these are no longer in the store.
   const showSettings = location.pathname.startsWith(settingsPath());
   const showDecisions = location.pathname === inboxPath();
-  const currentTaskDetail =
-    subject.kind === "task" && subject.channel.id
-      ? {
-          parentChannelId: subject.channel.id,
-          parentSlug: subject.channel.name,
-          taskNumber: subject.taskNumber,
-        }
-      : null;
+  const currentTaskDetail = useCurrentTaskDetail();
   const activeTab: ActiveTab = (() => {
     switch (subject.kind) {
       case "task":
@@ -349,22 +333,7 @@ export function MainPanel() {
             </>
           )}
           {!showHeader && (
-            <div
-              className="empty-state"
-              style={{
-                flex: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "var(--color-muted-foreground)",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              <h1 className="sr-only">Chorus — Select a channel or agent to get started</h1>
-              <span className="empty-state-icon">[chorus::idle]</span>
-              <span>Select a channel or agent to get started</span>
-            </div>
+            <EmptyShell label="Select a channel or agent to get started" />
           )}
 
           {activeTab === "chat" &&

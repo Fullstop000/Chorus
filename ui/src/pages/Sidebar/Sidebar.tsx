@@ -102,7 +102,7 @@ export function Sidebar() {
     navigate(fallback ? channelPath(fallback.name) : rootPath(), { replace: true })
   }
 
-  const showSettings = location.pathname.startsWith('/settings')
+  const showSettings = location.pathname.startsWith(settingsPath())
   const showDecisions = location.pathname === inboxPath()
 
   function toggleOverlay(target: string) {

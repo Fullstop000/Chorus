@@ -55,11 +55,14 @@ export function TabBar() {
     const dmTo = dmPath(agentName)
     const tabs: Tab[] = [
       { label: 'Chat', path: dmTo, isActive: location.pathname === dmTo },
-      ...(['workspace', 'activity', 'profile'] as const).map((t) => ({
-        label: t.charAt(0).toUpperCase() + t.slice(1),
-        path: agentTabPath(agentName, t),
-        isActive: location.pathname === agentTabPath(agentName, t),
-      })),
+      ...(['workspace', 'activity', 'profile'] as const).map((t) => {
+        const path = agentTabPath(agentName, t)
+        return {
+          label: t.charAt(0).toUpperCase() + t.slice(1),
+          path,
+          isActive: location.pathname === path,
+        }
+      }),
     ]
     return (
       <div className="tab-bar">

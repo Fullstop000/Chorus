@@ -105,8 +105,7 @@ function WorkspaceSection() {
 
   // After a workspace switch (or delete), the previously-selected
   // channel/agent/task may not exist in the new workspace. Navigate to /
-  // so RootRedirect picks a valid channel in the new workspace; the
-  // UrlToStoreSync mirror clears legacy nav store fields on URL change.
+  // so RootRedirect picks a valid channel in the new workspace.
   function clearWorkspaceScopedSelection() {
     navigate(rootPath())
   }

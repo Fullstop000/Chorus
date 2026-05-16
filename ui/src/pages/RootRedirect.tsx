@@ -3,6 +3,7 @@ import { useStore } from '../store/uiStore'
 import { useChannels } from '../hooks/data'
 import { isVisibleSidebarChannel } from './Sidebar/sidebarChannels'
 import { channelPath } from '../lib/routes'
+import { EmptyShell } from './EmptyShell'
 
 /**
  * Renders at `/`. Replaces the old `autoSelectChannel` effect: once the
@@ -31,23 +32,3 @@ export function RootRedirect(): JSX.Element {
   return <EmptyShell label="Select a channel or agent to get started" />
 }
 
-function EmptyShell({ label }: { label: string }): JSX.Element {
-  return (
-    <div
-      className="empty-state"
-      style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexDirection: 'column',
-        gap: 8,
-        color: 'var(--color-muted-foreground)',
-      }}
-    >
-      <h1 className="sr-only">Chorus — {label}</h1>
-      <span className="empty-state-icon">[chorus::idle]</span>
-      <span>{label}</span>
-    </div>
-  )
-}

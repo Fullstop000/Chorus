@@ -8,14 +8,11 @@ import {
 } from "./MessageList";
 import type { HistoryMessage, MessagePayload } from "../../data/chat";
 
-// MessageList calls the store in TWO shapes:
-//   useStore() — returns full state (destructured for advanceConversationLastReadSeq)
-//   useStore((s) => s.setCurrentTaskDetail) — selector form for our new branch
-// The mock must support both or the test crashes before the assertion.
+// MessageList calls `useStore()` (destructured) and `useStore(selector)`.
+// The mock supports both shapes.
 vi.mock("../../store", () => {
   const state = {
     advanceConversationLastReadSeq: () => {},
-    setCurrentTaskDetail: () => {},
   };
   return {
     useStore: (selector?: (s: typeof state) => unknown) =>
