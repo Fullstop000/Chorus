@@ -118,8 +118,8 @@ pub async fn handle_bridge_ws(
     .into_response()
 }
 
-/// WebSocket close codes specific to this PRD. Extends the catalog in
-/// `docs/plan/bridge-platform-protocol.md` §4.
+/// WebSocket close code beyond the standard catalog in
+/// `docs/BRIDGE.md` § Bridge ↔ Platform protocol → Errors.
 const CLOSE_CODE_KICKED: u16 = 4004;
 
 async fn close_with(socket: &mut WebSocket, code: u16, reason: &'static str) {

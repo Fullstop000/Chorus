@@ -9,8 +9,7 @@
 //! suitable for hosts reachable from the open internet without further
 //! access control.
 //!
-//! Sidecar effects when enabled, all documented in
-//! `docs/plan/dev-auth-and-bridge-onboarding.md` §3.2:
+//! Sidecar effects when enabled:
 //!   - WARN log on `chorus serve` startup
 //!   - Non-dismissible yellow banner in the UI
 //!   - `/health` reports `"dev_auth": true`

@@ -83,9 +83,9 @@ the one-liner it generates. The bridge reads host + token from
 `$XDG_DATA_HOME/chorus/bridge/bridge-credentials.toml`; the WS upgrade
 is bearer-protected, no env-var wiring required.
 
-See `docs/plan/bridge-platform-protocol.md` for the wire contract and
-`docs/BACKEND.md` § Phase 3 architecture for the server/bridge
-ownership split.
+See `docs/BRIDGE.md` § Bridge ↔ Platform protocol for the wire
+contract and `docs/BACKEND.md` § Bridge ↔ Platform Architecture for
+the server/bridge ownership split.
 
 ### CLI commands
 

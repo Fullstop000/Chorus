@@ -9,8 +9,7 @@
 //! The bearer is hash-only at rest. `POST /api/devices/mint` and
 //! `POST /api/devices/rotate` return the raw bearer literal in the
 //! script body **exactly once**, then it's gone forever. Subsequent
-//! mint calls return 410 Gone until Rotate. See
-//! `docs/plan/dev-auth-and-bridge-onboarding.md` §4.4.
+//! mint calls return 410 Gone until Rotate.
 
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};

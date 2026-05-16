@@ -304,9 +304,9 @@ See `docs/DRIVERS.md` for the full guide. Key principle: capture a wire trace fr
 
 Chorus runs as one process by default (`chorus-server`). For cross-machine
 deployment it splits into two. The wire protocol (frame contract,
-reconcile invariants, auth model) is specified in
-`docs/plan/bridge-platform-protocol.md`; this section covers only what a
-Rust contributor needs to navigate the code:
+reconcile invariants, auth model) is specified in `docs/BRIDGE.md`
+§ Bridge ↔ Platform protocol; this section covers only what a Rust
+contributor needs to navigate the code:
 
 ```
 ┌── Server (chorus-server) ─────────┐         ┌── Bridge (chorus bridge) ─┐
@@ -338,8 +338,9 @@ Rust contributor needs to navigate the code:
   store messages; agents pull them via MCP `check_messages` which
   proxies to the platform's HTTP API.
 - **Trace/activity logs** are bridge-local for now. The protocol does
-  not stream traces upstream — that's an open r5 decision (see
-  `docs/plan/bridge-platform-protocol.md` § open decisions).
+  not stream traces upstream; that's out of scope for the wire
+  contract (worth its own WS event topic later, but not load-bearing
+  for v1).
 
 ### Module map
 
@@ -379,5 +380,4 @@ id.
 - `docs/ACP.md` — ACP driver SOP and debugging
 - `docs/DRIVERS.md` — Adding new agent runtimes
 - `docs/INBOX.md` — Unread and read cursor mechanics
-- `docs/BRIDGE.md` — Shared MCP bridge architecture, per-runtime MCP config, troubleshooting
-- `docs/plan/bridge-platform-protocol.md` — bridge ↔ platform wire protocol (frames, auth, reconcile invariants)
+- `docs/BRIDGE.md` — Shared MCP bridge architecture, per-runtime MCP config, bridge ↔ platform wire protocol, troubleshooting
