@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import {
   getScopedAgentNames,
   MessageList,
@@ -83,14 +84,16 @@ describe("MessageList — task_event rendering", () => {
       },
     ];
     const html = renderToStaticMarkup(
-      <MessageList
-        targetKey="eng"
-        conversationId="cid"
-        messages={msgs}
-        loading={false}
-        lastReadSeq={0}
-        currentUser="alice"
-      />,
+      <MemoryRouter>
+        <MessageList
+          targetKey="eng"
+          conversationId="cid"
+          messages={msgs}
+          loading={false}
+          lastReadSeq={0}
+          currentUser="alice"
+        />
+      </MemoryRouter>,
     );
     const occurrences = (html.match(/data-testid="task-thread-7"/g) ?? [])
       .length;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, Trash2, X } from 'lucide-react'
 import {
@@ -16,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
+import { rootPath } from '../../lib/routes'
 import './SettingsPage.css'
 import { DevicesSection } from './DevicesSection'
 
@@ -83,10 +85,6 @@ function WorkspaceSection() {
   const queryClient = useQueryClient()
   const { refreshServerInfo } = useRefresh()
   const { workspaces, isLoading, error } = useWorkspaces()
-  const setCurrentAgent = useStore((s) => s.setCurrentAgent)
-  const setCurrentChannel = useStore((s) => s.setCurrentChannel)
-  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail)
-  const setActiveTab = useStore((s) => s.setActiveTab)
   const pushToast = useStore((s) => s.pushToast)
   const [name, setName] = useState('')
   const [pendingAction, setPendingAction] = useState<string | null>(null)
@@ -103,11 +101,14 @@ function WorkspaceSection() {
     ])
   }
 
+  const navigate = useNavigate()
+
+  // After a workspace switch (or delete), the previously-selected
+  // channel/agent/task may not exist in the new workspace. Navigate to /
+  // so RootRedirect picks a valid channel in the new workspace; the
+  // UrlToStoreSync mirror clears legacy nav store fields on URL change.
   function clearWorkspaceScopedSelection() {
-    setCurrentAgent(null)
-    setCurrentChannel(null)
-    setCurrentTaskDetail(null)
-    setActiveTab('chat')
+    navigate(rootPath())
   }
 
   async function runWorkspaceAction(
@@ -535,7 +536,14 @@ function LogsSection() {
 }
 
 export function SettingsPage() {
-  const { currentUser, currentUserId, setShowSettings } = useStore()
+  const { currentUser, currentUserId } = useStore()
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  function handleClose() {
+    const from = (location.state as { from?: string } | null)?.from
+    navigate(from ?? rootPath())
+  }
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile')
 
   return (
@@ -546,7 +554,7 @@ export function SettingsPage() {
           className="settings-close"
           type="button"
           aria-label="Close settings"
-          onClick={() => setShowSettings(false)}
+          onClick={handleClose}
         >
           <X size={16} />
         </button>

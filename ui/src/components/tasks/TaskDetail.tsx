@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../../store";
+import { tasksBoardPath } from "../../lib/routes";
 import type { TaskDetailTarget } from "../../store/uiStore";
 import { useHistory } from "../../hooks/useHistory";
 import { ChatPanel } from "../chat/ChatPanel";
@@ -174,8 +176,9 @@ export function TaskDetailView({
  * so the hook call is stable across renders and satisfies Rules of Hooks.
  */
 export function TaskDetail() {
-  const { currentUser, currentUserId, currentTaskDetail, setCurrentTaskDetail, setActiveTab } =
-    useStore();
+  const { currentUser, currentUserId, currentTaskDetail } = useStore();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advanceError, setAdvanceError] = useState<string | null>(null);
@@ -186,12 +189,20 @@ export function TaskDetail() {
   // one place instead of duplicating it inside the advance handler.
   const [refreshTick, setRefreshTick] = useState(0);
 
-  // Single close path — used by the back button and by Esc. Restores whatever
-  // tab the user came from (falls back to Tasks when the target didn't stash one,
-  // e.g. deep-linked or programmatic opens).
+  // Single close path — used by the back button and by Esc. Returns the user
+  // to wherever they came from (recorded in location.state.from by the
+  // caller that opened the detail). Falls back to the parent channel's
+  // tasks board when there's no recorded origin (e.g. deep-link entry).
+  // Not `navigate(-1)` — history.length lies in SPAs.
   function handleClose() {
-    setActiveTab(currentTaskDetail?.returnToTab ?? "tasks");
-    setCurrentTaskDetail(null);
+    const from = (location.state as { from?: string } | null)?.from
+    if (from) {
+      navigate(from)
+      return
+    }
+    if (currentTaskDetail) {
+      navigate(tasksBoardPath(currentTaskDetail.parentSlug), { replace: true })
+    }
   }
 
   // Esc should back out of the detail overlay (keyboard a11y — Dialogs and

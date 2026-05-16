@@ -1,10 +1,11 @@
 import React, { useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import { useNavigate } from "react-router-dom";
 import { Copy, Paperclip, Loader } from "lucide-react";
 import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
-import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
+import { agentTabPath } from "../../lib/routes";
 import { SystemNotice } from "./SystemNotice";
 import { Telescope } from "./Telescope";
 import type { AgentTrace } from "../../store/traceStore";
@@ -185,7 +186,7 @@ export function MessageItem({
   isTraceExpanded,
   onToggleTrace,
 }: MessageItemProps) {
-  const { setActiveTab, setCurrentAgent } = useStore();
+  const navigate = useNavigate();
   const agents = useAgents();
   const itemRef = useRef<HTMLDivElement>(null);
 
@@ -227,8 +228,7 @@ export function MessageItem({
   // }, [message.id])
 
   const handleSelectAgent = (agent: AgentInfo) => {
-    setCurrentAgent(agent);
-    setActiveTab("profile");
+    navigate(agentTabPath(agent.name, "profile"));
   };
 
   const parsedSummary = useMemo<TraceSummary | undefined>(() => {

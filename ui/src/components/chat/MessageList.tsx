@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageItem } from "./MessageItem";
 import { Telescope } from "./Telescope";
@@ -11,6 +12,7 @@ import { useStore } from "../../store";
 import { useTraceStore } from "../../store/traceStore";
 import { useTaskEventLog } from "../../hooks/useTaskEventLog";
 import { TaskEventMessage } from "./TaskEventMessage";
+import { taskDetailPath } from "../../lib/routes";
 import "./MessageList.css";
 import type { RefObject } from "react";
 import type { AgentTrace } from "../../store/traceStore";
@@ -123,7 +125,8 @@ export function MessageList({
   const queryKey = historyQueryKeys.history(conversationId ?? "");
   const { advanceConversationLastReadSeq } = useStore();
   const taskEventIndex = useTaskEventLog(messages);
-  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // ── Sync refs with props ──
   useEffect(() => {
@@ -444,14 +447,19 @@ export function MessageList({
               {isLatestForTask && state && (
                 <TaskEventMessage
                   taskState={state}
-                  onOpen={() =>
-                    setCurrentTaskDetail({
-                      parentChannelId: conversationId ?? "",
-                      parentSlug: targetKey ?? "",
-                      taskNumber,
-                      returnToTab: "chat",
-                    })
-                  }
+                  onOpen={() => {
+                    // Strip the `#` prefix from targetKey to get the channel slug
+                    // for the URL. DM-scoped tasks (where targetKey starts with
+                    // `dm:@`) keep their odd-looking slug; encodeURIComponent makes
+                    // the URL valid even though it's not shareable.
+                    const slug = targetKey?.startsWith("#")
+                      ? targetKey.slice(1)
+                      : targetKey;
+                    if (!slug) return;
+                    navigate(taskDetailPath(slug, taskNumber), {
+                      state: { from: location.pathname },
+                    });
+                  }}
                 />
               )}
             </div>

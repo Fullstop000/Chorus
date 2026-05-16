@@ -5,8 +5,9 @@ import {
   removeTeamMember,
   updateTeam,
 } from "../../data";
-import { useStore } from "../../store";
+import { useNavigate } from "react-router-dom";
 import { useAgents, useHumans } from "../../hooks/data";
+import { rootPath } from "../../lib/routes";
 import type { Team, TeamMember } from "./types";
 import {
   Dialog,
@@ -46,7 +47,7 @@ export function TeamSettings({
   onRefresh,
   onDeleted,
 }: Props) {
-  const { setCurrentChannel } = useStore();
+  const navigate = useNavigate();
   const agents = useAgents();
   const humans = useHumans();
   const [displayName, setDisplayName] = useState(team.display_name);
@@ -144,7 +145,7 @@ export function TeamSettings({
     setError(null);
     try {
       await deleteTeam(team.id);
-      setCurrentChannel(null);
+      navigate(rootPath());
       await onDeleted();
       onOpenChange(false);
     } catch (err) {
